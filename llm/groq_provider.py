@@ -28,7 +28,11 @@ from llm.base import (
 logger = logging.getLogger("jarvis.llm.groq")
 
 GROQ_API_BASE = "https://api.groq.com/openai/v1"
-DEFAULT_MODEL = "llama-3.3-70b-versatile"
+# gpt-oss-120b: large context (131k), strong tool-calling support (OpenAI harmony
+# format), and available on Ollama Cloud too so provider fallback doesn't change
+# model family. Verified against the live /v1/models catalog — re-check
+# periodically as Groq's lineup changes.
+DEFAULT_MODEL = "openai/gpt-oss-120b"
 
 
 class GroqProvider:

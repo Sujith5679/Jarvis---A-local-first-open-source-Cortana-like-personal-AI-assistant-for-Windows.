@@ -11,7 +11,13 @@ from storage.migrations import apply_migrations
 
 @pytest.fixture
 def isolated_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """A Settings instance pointed at a throwaway data dir, not the real one."""
+    """A Settings instance pointed at a throwaway data dir, not the real one.
+
+    Also chdir's into tmp_path so pydantic-settings' `env_file=".env"` lookup
+    can't find (and silently load) the real repo `.env` — otherwise tests run
+    against whatever real credentials happen to be configured locally.
+    """
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("JARVIS_DATA_DIR", str(tmp_path))
     get_settings.cache_clear()
     settings = get_settings()
@@ -33,7 +39,12 @@ def migrated_conn():
 @pytest.fixture
 def real_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """A real (file-based) migrated database at settings.db_path, for code that
-    goes through storage.database.get_connection() (repositories, audit, agent)."""
+    goes through storage.database.get_connection() (repositories, audit, agent).
+
+    Also chdir's into tmp_path so the real repo `.env` can't be picked up
+    (see isolated_settings for why that matters).
+    """
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("JARVIS_DATA_DIR", str(tmp_path))
     get_settings.cache_clear()
     settings = get_settings()

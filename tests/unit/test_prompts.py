@@ -15,6 +15,7 @@ def test_prompt_includes_timezone(isolated_settings):
 
 
 def test_prompt_includes_user_name_when_set(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("JARVIS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("JARVIS_USER_NAME", "Alex")
     from config.settings import get_settings

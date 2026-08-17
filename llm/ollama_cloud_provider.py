@@ -34,7 +34,9 @@ from llm.base import (
 logger = logging.getLogger("jarvis.llm.ollama_cloud")
 
 OLLAMA_CLOUD_API_BASE = "https://ollama.com"
-DEFAULT_MODEL = "llama3.3"
+# Same model family as llm.groq_provider's default so Groq -> Ollama Cloud
+# fallback doesn't change reasoning/tool-calling behavior mid-conversation.
+DEFAULT_MODEL = "gpt-oss:120b"
 
 
 class OllamaCloudProvider:

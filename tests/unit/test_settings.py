@@ -20,6 +20,7 @@ def test_has_groq_false_when_unset(isolated_settings):
 
 
 def test_has_groq_true_when_key_present(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("JARVIS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("GROQ_API_KEY", "gsk_test_key")
     get_settings.cache_clear()
