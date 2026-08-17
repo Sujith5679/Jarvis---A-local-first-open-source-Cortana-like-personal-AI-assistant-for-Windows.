@@ -9,9 +9,9 @@ database path stay consistent everywhere.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
 
 from config.settings import get_settings
 

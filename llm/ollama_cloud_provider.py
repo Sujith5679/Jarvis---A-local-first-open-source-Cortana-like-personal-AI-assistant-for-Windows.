@@ -16,12 +16,12 @@ import asyncio
 import logging
 
 import httpx
-
 from config.defaults import (
     DEFAULT_LLM_MAX_RETRIES,
     DEFAULT_LLM_RETRY_BACKOFF_SECONDS,
     DEFAULT_LLM_TIMEOUT_SECONDS,
 )
+
 from llm.base import (
     LLMResponse,
     ProviderAuthError,
@@ -75,7 +75,9 @@ class OllamaCloudProvider:
         for attempt in range(self.max_retries + 1):
             try:
                 async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    resp = await client.post(f"{self.base_url}/api/chat", json=payload, headers=headers)
+                    resp = await client.post(
+                        f"{self.base_url}/api/chat", json=payload, headers=headers
+                    )
                 return self._parse_response(resp)
             except (ProviderRateLimitError, ProviderConnectionError, ProviderTimeoutError) as exc:
                 last_error = exc

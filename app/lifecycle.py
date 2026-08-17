@@ -11,9 +11,10 @@ import logging
 from dataclasses import dataclass
 from typing import Literal
 
-from app.bootstrap import BootstrapContext
 from security.audit import log_event
 from storage.database import connect
+
+from app.bootstrap import BootstrapContext
 
 logger = logging.getLogger("jarvis.lifecycle")
 

@@ -87,6 +87,9 @@ class AllProvidersFailedError(Exception):
 
     def __str__(self) -> str:
         if not self.attempts:
-            return "No LLM provider is configured. Set GROQ_API_KEY or OLLAMA_CLOUD_API_KEY in .env."
+            return (
+                "No LLM provider is configured. Set GROQ_API_KEY or "
+                "OLLAMA_CLOUD_API_KEY in .env."
+            )
         details = "; ".join(f"{e.provider}: {e}" for e in self.attempts)
         return f"All LLM providers failed: {details}"

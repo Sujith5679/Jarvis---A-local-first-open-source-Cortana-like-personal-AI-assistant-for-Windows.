@@ -8,7 +8,7 @@ so the whole process shares one cached, validated configuration object.
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
 
@@ -19,7 +19,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
-class ConfigurationMode(str, Enum):
+class ConfigurationMode(StrEnum):
     """spec.md §34 — provider/behavior policy presets."""
 
     FAST = "fast"          # Groq primary, Ollama Cloud fallback

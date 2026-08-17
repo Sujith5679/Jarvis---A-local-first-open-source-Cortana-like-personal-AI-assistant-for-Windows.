@@ -41,5 +41,6 @@ class ChatLog(QTextEdit):
         self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
 
     def append_status(self, text: str) -> None:
-        self.append(f'<p style="margin:4px 0; color:#9ca3af; font-style:italic;">{html.escape(text)}</p>')
+        style = "margin:4px 0; color:#9ca3af; font-style:italic;"
+        self.append(f'<p style="{style}">{html.escape(text)}</p>')
         self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())

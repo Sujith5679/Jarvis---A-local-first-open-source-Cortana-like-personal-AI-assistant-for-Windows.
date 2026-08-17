@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
 from security.audit import audit_action, log_event
 
 
@@ -59,9 +58,8 @@ def test_audit_action_success_records_duration(migrated_conn, monkeypatch):
 def test_audit_action_error_records_error_code(migrated_conn, monkeypatch):
     monkeypatch.setattr("security.audit.get_connection", lambda: _FakeCtx(migrated_conn))
 
-    with pytest.raises(ValueError):
-        with audit_action("do_thing_fail", tool="notes", risk_level="high"):
-            raise ValueError("boom")
+    with pytest.raises(ValueError), audit_action("do_thing_fail", tool="notes", risk_level="high"):
+        raise ValueError("boom")
 
     row = migrated_conn.execute(
         "SELECT * FROM audit_log WHERE action='do_thing_fail'"

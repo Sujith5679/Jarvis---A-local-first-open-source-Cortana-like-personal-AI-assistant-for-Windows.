@@ -23,12 +23,11 @@ def test_get_messages_respects_limit_and_order(real_db):
 
 
 def test_invalid_role_rejected(real_db):
+    import pytest
+
     conv_id = conv_repo.create_conversation()
-    try:
+    with pytest.raises(ValueError):
         conv_repo.add_message(conv_id, "bogus", "x")
-        assert False, "expected ValueError"
-    except ValueError:
-        pass
 
 
 def test_to_llm_messages_excludes_tool_role(real_db):

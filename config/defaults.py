@@ -24,6 +24,11 @@ DEFAULT_GLOBAL_REQUEST_TIMEOUT_SECONDS = 90
 DEFAULT_CHUNK_SIZE_TOKENS = 650
 DEFAULT_CHUNK_OVERLAP_TOKENS = 75
 
+# --- Embeddings (spec.md §33: must work fully offline) ---
+# all-MiniLM-L6-v2: small (~80MB), fast on CPU, 384-dim, well-established
+# default for local semantic search over personal documents/notes.
+DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+
 # --- Hybrid retrieval (spec.md §16) ---
 DEFAULT_KEYWORD_WEIGHT = 0.5
 DEFAULT_SEMANTIC_WEIGHT = 0.5

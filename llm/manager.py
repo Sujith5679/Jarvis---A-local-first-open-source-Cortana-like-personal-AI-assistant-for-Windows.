@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 
 from config.settings import Settings
+
 from llm.base import AllProvidersFailedError, LLMProvider, LLMResponse, ProviderError
 from llm.groq_provider import GroqProvider
 from llm.ollama_cloud_provider import OllamaCloudProvider
@@ -25,7 +26,7 @@ class LLMManager:
         self.providers = providers
 
     @classmethod
-    def from_settings(cls, settings: Settings) -> "LLMManager":
+    def from_settings(cls, settings: Settings) -> LLMManager:
         """Build the default Groq -> Ollama Cloud provider chain from configuration.
 
         Only configured providers are included. Order matches spec.md §11's

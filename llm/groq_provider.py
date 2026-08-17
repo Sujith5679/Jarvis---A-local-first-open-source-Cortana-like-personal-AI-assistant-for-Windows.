@@ -10,12 +10,12 @@ import asyncio
 import logging
 
 import httpx
-
 from config.defaults import (
     DEFAULT_LLM_MAX_RETRIES,
     DEFAULT_LLM_RETRY_BACKOFF_SECONDS,
     DEFAULT_LLM_TIMEOUT_SECONDS,
 )
+
 from llm.base import (
     LLMResponse,
     ProviderAuthError,
@@ -89,7 +89,9 @@ class GroqProvider:
                     continue
                 raise
             except httpx.TimeoutException as exc:
-                raise ProviderTimeoutError(f"Groq request timed out: {exc}", provider=self.name) from exc
+                raise ProviderTimeoutError(
+                    f"Groq request timed out: {exc}", provider=self.name
+                ) from exc
             except httpx.ConnectError as exc:
                 raise ProviderConnectionError(
                     f"Could not connect to Groq: {exc}", provider=self.name

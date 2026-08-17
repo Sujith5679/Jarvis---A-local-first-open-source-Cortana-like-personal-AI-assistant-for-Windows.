@@ -10,10 +10,9 @@ from __future__ import annotations
 
 import sys
 
+from app.bootstrap import BootstrapContext
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QVBoxLayout, QWidget
-
-from app.bootstrap import BootstrapContext
 
 
 class JarvisShellWindow(QMainWindow):

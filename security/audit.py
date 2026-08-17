@@ -19,13 +19,14 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Iterator
+from datetime import UTC, datetime
+
+from storage.database import get_connection
 
 from security.secrets import known_secrets_from_settings, scrub_secrets
-from storage.database import get_connection
 
 MAX_SUMMARY_LENGTH = 2000
 
@@ -52,7 +53,7 @@ def log_event(
 ) -> None:
     """Write a single audit_log row. Never raises — audit failures must not break the app."""
     row = (
-        datetime.now(timezone.utc).isoformat(),
+        datetime.now(UTC).isoformat(),
         session_id,
         action,
         tool,

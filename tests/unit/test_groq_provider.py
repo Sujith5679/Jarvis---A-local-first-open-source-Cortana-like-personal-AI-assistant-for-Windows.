@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import httpx
 import pytest
-
 from llm.base import ProviderAuthError, ProviderRateLimitError, ProviderResponseError
 from llm.groq_provider import GroqProvider
 

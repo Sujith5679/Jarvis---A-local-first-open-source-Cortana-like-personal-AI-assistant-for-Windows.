@@ -10,13 +10,13 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from storage.database import get_connection
 
 
 def create_conversation(title: str | None = None, conn: sqlite3.Connection | None = None) -> int:
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
 
     def _run(c: sqlite3.Connection) -> int:
         cur = c.execute(
@@ -43,7 +43,7 @@ def add_message(
     if role not in ("user", "assistant", "system", "tool"):
         raise ValueError(f"Invalid message role: {role!r}")
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     tool_calls_json = json.dumps(tool_calls) if tool_calls else None
     citations_json = json.dumps(citations) if citations else None
 

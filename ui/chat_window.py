@@ -14,6 +14,9 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from agent.graph import Agent, build_agent
+from agent.state import AgentState
+from app.bootstrap import BootstrapContext
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -24,11 +27,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-
-from agent.graph import Agent, build_agent
-from agent.state import AgentState
-from app.bootstrap import BootstrapContext
 from storage.repositories import conversations as conv_repo
+
 from ui.messages import ChatLog
 
 logger = logging.getLogger("jarvis.ui.chat_window")
@@ -52,7 +52,7 @@ class ChatTurnWorker(QThread):
                 self.agent.run_turn(self.conversation_id, self.user_message)
             )
             self.succeeded.emit(dict(state))
-        except Exception as exc:  # pragma: no cover - defensive, agent already catches its own errors
+        except Exception as exc:  # pragma: no cover - defensive; agent handles its own errors
             logger.exception("Unexpected error running agent turn")
             self.failed.emit(str(exc))
 
@@ -139,8 +139,9 @@ class ChatWindow(QMainWindow):
 
 
 def run(ctx: BootstrapContext) -> int:
-    from PySide6.QtWidgets import QApplication
     import sys
+
+    from PySide6.QtWidgets import QApplication
 
     app = QApplication.instance() or QApplication(sys.argv)
     window = ChatWindow(ctx)

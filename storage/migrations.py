@@ -10,7 +10,7 @@ every startup.
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 # Each entry: (version, name, sql). SQL may contain multiple statements.
 MIGRATIONS: list[tuple[int, str, str]] = [
@@ -161,6 +161,29 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);
         """,
     ),
+    (
+        2,
+        "fts_sync_triggers",
+        """
+        -- document_chunks_fts is an external-content FTS5 table (spec.md §16),
+        -- so SQLite does not keep it in sync automatically. These triggers
+        -- mirror every insert/update/delete on document_chunks into the index.
+        CREATE TRIGGER IF NOT EXISTS document_chunks_ai AFTER INSERT ON document_chunks BEGIN
+            INSERT INTO document_chunks_fts(rowid, text) VALUES (new.id, new.text);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS document_chunks_ad AFTER DELETE ON document_chunks BEGIN
+            INSERT INTO document_chunks_fts(document_chunks_fts, rowid, text)
+                VALUES ('delete', old.id, old.text);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS document_chunks_au AFTER UPDATE ON document_chunks BEGIN
+            INSERT INTO document_chunks_fts(document_chunks_fts, rowid, text)
+                VALUES ('delete', old.id, old.text);
+            INSERT INTO document_chunks_fts(rowid, text) VALUES (new.id, new.text);
+        END;
+        """,
+    ),
 ]
 
 
@@ -198,7 +221,7 @@ def apply_migrations(conn: sqlite3.Connection) -> list[int]:
         conn.executescript(sql)
         conn.execute(
             "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
-            (migration_version, name, datetime.now(timezone.utc).isoformat()),
+            (migration_version, name, datetime.now(UTC).isoformat()),
         )
         applied.append(migration_version)
 
