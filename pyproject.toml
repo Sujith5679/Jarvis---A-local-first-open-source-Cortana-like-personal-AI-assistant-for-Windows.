@@ -1,0 +1,27 @@
+[project]
+name = "jarvis"
+version = "0.1.0"
+description = "Local-first, open-source, Cortana-like personal AI assistant for Windows."
+requires-python = ">=3.11"
+readme = "README.md"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["app", "config", "agent", "llm", "tools", "documents", "rag",
+       "memory", "storage", "scheduler", "voice", "web", "ui",
+       "security", "integrations", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_ignores = true
+warn_redundant_casts = true
+check_untyped_defs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

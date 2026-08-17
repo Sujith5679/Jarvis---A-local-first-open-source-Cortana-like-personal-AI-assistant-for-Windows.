@@ -1,0 +1,29 @@
+# --- Phase 0: core / config / storage / logging ---
+pydantic>=2.6
+pydantic-settings>=2.2
+python-dotenv>=1.0
+PySide6>=6.6
+
+# --- Phase 1: LLM providers + agent orchestration ---
+httpx>=0.27
+langgraph>=0.1
+langchain-core>=0.2
+
+# --- Phase 2: document parsing + retrieval ---
+PyMuPDF>=1.24
+python-docx>=1.1
+python-pptx>=0.6.23
+openpyxl>=3.1
+beautifulsoup4>=4.12
+readability-lxml>=0.8
+faiss-cpu>=1.8
+sentence-transformers>=2.7
+
+# --- Phase 3: scheduling ---
+APScheduler>=3.10
+
+# --- Dev / test tooling (all phases) ---
+pytest>=8.0
+pytest-asyncio>=0.23
+ruff>=0.4
+mypy>=1.10
