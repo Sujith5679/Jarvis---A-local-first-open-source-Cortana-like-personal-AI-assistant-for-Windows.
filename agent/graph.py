@@ -18,6 +18,16 @@ never mix two providers' tool-call formats in one exchange. If the pinned
 provider then fails mid-loop, we fall back through LLMManager fresh (small
 risk of a format mismatch in that rare case, preferred over crashing the
 turn).
+
+When the LLM proposes a HIGH-risk tool call (e.g. delete_note), the loop
+stops immediately with `requires_confirmation=True` and a
+`confirmation_request` describing what was proposed — the tool is NOT run.
+The caller (UI) shows that to the user and, on a decision, calls
+`Agent.confirm_and_execute()` directly: it does not re-enter the LLM loop or
+try to reconstruct the paused conversation state, it just runs (or skips)
+exactly that one tool and appends a deterministic confirmation message to
+history. This keeps "was this actually confirmed by the user" unambiguous
+rather than trusting the LLM to re-propose the same call faithfully.
 """
 
 from __future__ import annotations
@@ -37,7 +47,7 @@ from llm.manager import LLMManager
 from security.audit import log_event
 from security.permissions import check_permission
 from storage.repositories import conversations as conv_repo
-from tools import file_reader, file_search
+from tools import file_reader, file_search, notes, reminders, tasks
 from tools.registry import Tool, ToolRegistry
 
 from agent.prompts import build_system_prompt
@@ -50,12 +60,15 @@ TOOL_RESULT_MAX_CHARS = 4000
 
 
 def build_default_tool_registry() -> ToolRegistry:
-    """Phase 2 tools. Later phases (notes/tasks/reminders/web/windows) add
-    their own `register(registry)` calls here without touching the rest of
-    this module."""
+    """Phase 2/3 tools. Later phases (web/windows) add their own
+    `register(registry)` calls here without touching the rest of this
+    module."""
     registry = ToolRegistry()
     file_search.register(registry)
     file_reader.register(registry)
+    notes.register(registry)
+    tasks.register(registry)
+    reminders.register(registry)
     return registry
 
 
@@ -107,6 +120,17 @@ def _extract_citations(tool_results: list[dict]) -> list[dict]:
                 }
             )
     return citations
+
+
+def _summarize_confirmed_result(tool_name: str, arguments: dict, result: dict) -> str:
+    """Deterministic (non-LLM) confirmation message. Only ever describes what
+    the tool actually returned — never phrased as if the LLM is guessing,
+    per spec.md §55 ("Never claim success unless the tool confirmed it")."""
+    if tool_name == "delete_note":
+        return f"Done — deleted note #{arguments.get('note_id')}."
+    if tool_name == "delete_task":
+        return f"Done — deleted task #{arguments.get('task_id')}."
+    return f"Done — {tool_name} completed: {result}"
 
 
 class Agent:
@@ -202,6 +226,13 @@ class Agent:
                 state["tool_calls"].append({"name": tc["name"], "arguments": tc["arguments"]})
                 result = await self._execute_tool(state, tc["name"], tc["arguments"])
                 state["tool_results"].append({"name": tc["name"], "result": result})
+
+                if state["requires_confirmation"]:
+                    # Stop entirely rather than feed this back to the LLM and
+                    # keep going — the turn is paused until the UI calls
+                    # confirm_and_execute() with the user's decision.
+                    return
+
                 llm_messages.append(
                     {
                         "role": "tool",
@@ -222,9 +253,6 @@ class Agent:
 
         decision = check_permission(tool)
         if not decision.allowed:
-            # No HIGH/MEDIUM-risk tool exists yet (Phase 2), so this path is
-            # inert today; Phase 3 wires a real UI confirmation pause here
-            # instead of auto-denying.
             state["requires_confirmation"] = True
             state["confirmation_request"] = {
                 "tool": name,
@@ -272,9 +300,12 @@ class Agent:
         return state
 
     async def _audit(self, state: AgentState) -> AgentState:
+        status = "success" if state["error"] is None else "error"
+        if state["requires_confirmation"]:
+            status = "pending_confirmation"
         log_event(
             "chat_turn",
-            status="success" if state["error"] is None else "error",
+            status=status,
             session_id=state["conversation_id"],
             input_summary=state["user_message"][:200],
             result_summary=(state["response"] or state["error"] or "")[:200],
@@ -294,6 +325,70 @@ class Agent:
     async def run_turn(self, conversation_id: int, user_message: str) -> AgentState:
         state = new_state(user_message, str(conversation_id))
         return await self._graph.ainvoke(state)  # type: ignore[return-value]
+
+    async def confirm_and_execute(
+        self, conversation_id: int, tool_name: str, arguments: dict, *, approved: bool
+    ) -> AgentState:
+        """Resolves a paused `requires_confirmation` turn. Does not go back
+        through the LLM — runs (or skips) exactly the one proposed tool call
+        and appends a deterministic result message to conversation history.
+        See the module docstring for why."""
+        state = new_state("", str(conversation_id))
+
+        tool = self.tool_registry.get(tool_name)
+        if tool is None:
+            state["error"] = f"Unknown tool: {tool_name}"
+            return state
+
+        if not approved:
+            message = f"Okay, I won't run {tool_name}."
+            conv_repo.add_message(conversation_id, "assistant", message)
+            state["response"] = message
+            log_event(
+                "tool_confirmation",
+                status="cancelled",
+                tool=tool_name,
+                session_id=str(conversation_id),
+                input_summary=str(arguments),
+            )
+            return state
+
+        try:
+            result = await asyncio.wait_for(
+                tool.execute(**arguments), timeout=tool.metadata.timeout_seconds
+            )
+        except TimeoutError:
+            result = {
+                "error": f"Tool '{tool_name}' timed out after {tool.metadata.timeout_seconds}s."
+            }
+        except Exception as exc:
+            logger.exception("Confirmed tool '%s' raised an unexpected error", tool_name)
+            result = {"error": f"Tool '{tool_name}' failed: {exc}"}
+
+        state["tool_calls"].append({"name": tool_name, "arguments": arguments})
+        state["tool_results"].append({"name": tool_name, "result": result})
+        state["citations"] = _extract_citations(state["tool_results"])
+
+        if result.get("error"):
+            state["error"] = result["error"]
+            message = f"I couldn't complete that: {result['error']}"
+        else:
+            message = _summarize_confirmed_result(tool_name, arguments, result)
+
+        conv_repo.add_message(
+            conversation_id, "assistant", message, citations=state["citations"] or None
+        )
+        state["response"] = message
+
+        log_event(
+            "tool_confirmation",
+            status="error" if result.get("error") else "success",
+            tool=tool_name,
+            session_id=str(conversation_id),
+            input_summary=str(arguments),
+            result_summary=str(result)[:300],
+        )
+        return state
 
 
 def build_agent(settings: Settings | None = None) -> Agent:

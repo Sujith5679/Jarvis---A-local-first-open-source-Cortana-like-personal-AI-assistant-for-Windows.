@@ -24,6 +24,15 @@ def _get_retriever() -> HybridRetriever:
     return build_default_hybrid_retriever()
 
 
+def invalidate_cache() -> None:
+    """Drop the cached retriever so the next search rebuilds it (and reloads
+    the FAISS index from disk). Must be called after any reindex that runs
+    through a *different* VectorStore instance than the cached one — e.g. a
+    folder added via the UI — since a VectorStore loads its index into
+    memory once and does not watch the file for external changes."""
+    _get_retriever.cache_clear()
+
+
 def _snippet(text: str, max_chars: int = SNIPPET_MAX_CHARS) -> str:
     text = text.strip()
     if len(text) <= max_chars:
