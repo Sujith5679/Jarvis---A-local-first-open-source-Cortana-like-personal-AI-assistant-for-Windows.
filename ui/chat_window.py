@@ -1,14 +1,20 @@
 """The floating chat popup (spec.md §25).
 
 Compact, resizable, draggable (via native window chrome), Facebook/Google-Chat
-style single conversation view. UI states implemented so far: idle, thinking,
-waiting-for-confirmation, error. Listening/speaking arrive with voice
-(Phase 5).
+style single conversation view. UI states implemented: idle, thinking,
+listening, speaking, waiting-for-confirmation, error.
 
 The agent turn runs on a background QThread (`ChatTurnWorker`) so a slow LLM
 call never freezes the UI thread (spec.md §42). Reminder notifications
 (spec.md §22) are wired here too: `SchedulerService` polls on its own
 thread and crosses back via a Qt signal to `NotificationService`.
+
+Voice (spec.md §24) is push-to-talk: hold the mic button to record, release
+to transcribe + send. `AudioRecorder.start()/.stop()` don't block (PortAudio
+runs its own callback thread), but transcription, the agent turn, and TTS
+playback all run on `VoiceTurnWorker` off the UI thread. Voice is entirely
+optional — `JARVIS_ENABLE_VOICE=false` hides the mic button, and any STT/TTS
+failure degrades to text-only rather than blocking the user (spec.md §32).
 """
 
 from __future__ import annotations
@@ -33,6 +39,11 @@ from PySide6.QtWidgets import (
 )
 from scheduler.service import SchedulerService
 from storage.repositories import conversations as conv_repo
+from voice.audio import AudioRecorder, MicrophoneUnavailableError, play_audio
+from voice.stt import TranscriptionError
+from voice.stt import transcribe as stt_transcribe
+from voice.tts import SynthesisError
+from voice.tts import synthesize as tts_synthesize
 
 from ui.messages import ChatLog
 from ui.notifications import NotificationService
@@ -93,13 +104,79 @@ class ConfirmTurnWorker(QThread):
             self.failed.emit(str(exc))
 
 
+class VoiceTurnWorker(QThread):
+    """Transcribe -> agent turn -> (optionally) synthesize + speak the reply,
+    entirely off the UI thread. Each stage can fail independently without
+    taking down the others — a transcription failure never touches the
+    agent, and a TTS failure never hides the (already-shown) text reply."""
+
+    transcribed = Signal(str)
+    succeeded = Signal(dict)
+    failed = Signal(str)
+    started_speaking = Signal()
+    finished_speaking = Signal()
+
+    def __init__(
+        self,
+        agent: Agent,
+        conversation_id: int,
+        audio,
+        sample_rate: int,
+        *,
+        speak_reply: bool,
+    ) -> None:
+        super().__init__()
+        self.agent = agent
+        self.conversation_id = conversation_id
+        self.audio = audio
+        self.sample_rate = sample_rate
+        self.speak_reply = speak_reply
+
+    def run(self) -> None:
+        try:
+            text = stt_transcribe(self.audio, self.sample_rate).strip()
+        except TranscriptionError as exc:
+            self.failed.emit(f"Could not understand that: {exc}")
+            return
+
+        if not text:
+            self.failed.emit("I didn't catch that — try again, or type your message.")
+            return
+        self.transcribed.emit(text)
+
+        try:
+            state: AgentState = asyncio.run(self.agent.run_turn(self.conversation_id, text))
+        except Exception as exc:  # pragma: no cover - defensive; agent handles its own errors
+            logger.exception("Unexpected error running voice-originated agent turn")
+            self.failed.emit(str(exc))
+            return
+
+        self.succeeded.emit(dict(state))
+
+        should_speak = (
+            self.speak_reply
+            and not state.get("requires_confirmation")
+            and not state.get("error")
+            and state.get("response")
+        )
+        if should_speak:
+            try:
+                audio, sr = tts_synthesize(state["response"])
+                self.started_speaking.emit()
+                play_audio(audio, sr)
+            except SynthesisError as exc:
+                logger.warning("TTS failed; reply already shown as text: %s", exc)
+            finally:
+                self.finished_speaking.emit()
+
+
 class ChatWindow(QMainWindow):
     def __init__(self, ctx: BootstrapContext) -> None:
         super().__init__()
         self.ctx = ctx
         self.agent = build_agent(ctx.settings)
         self.conversation_id = conv_repo.create_conversation()
-        self._worker: ChatTurnWorker | ConfirmTurnWorker | None = None
+        self._worker: ChatTurnWorker | ConfirmTurnWorker | VoiceTurnWorker | None = None
 
         self.setWindowTitle("JARVIS")
         self.resize(380, 540)
@@ -129,6 +206,16 @@ class ChatWindow(QMainWindow):
         self.input_field.setPlaceholderText("Type a message...")
         self.input_field.returnPressed.connect(self._on_send_clicked)
         input_layout.addWidget(self.input_field, stretch=1)
+
+        self._recorder: AudioRecorder | None = None
+        if ctx.settings.jarvis_enable_voice:
+            self._recorder = AudioRecorder()
+            self.mic_button = QPushButton("🎤", input_row)
+            self.mic_button.setFixedWidth(36)
+            self.mic_button.setToolTip("Hold to talk")
+            self.mic_button.pressed.connect(self._on_mic_pressed)
+            self.mic_button.released.connect(self._on_mic_released)
+            input_layout.addWidget(self.mic_button)
 
         self.send_button = QPushButton(">", input_row)
         self.send_button.setFixedWidth(36)
@@ -164,6 +251,8 @@ class ChatWindow(QMainWindow):
     def _set_thinking(self, thinking: bool) -> None:
         self.input_field.setEnabled(not thinking)
         self.send_button.setEnabled(not thinking)
+        if self._recorder is not None:
+            self.mic_button.setEnabled(not thinking)
         self.status_label.setText("Jarvis is thinking..." if thinking else "")
         if not thinking:
             self.input_field.setFocus()
@@ -198,6 +287,42 @@ class ChatWindow(QMainWindow):
     def _on_turn_failed(self, message: str) -> None:
         self._set_thinking(False)
         self.chat_log.append_message("error", f"Unexpected error: {message}")
+
+    # --- Voice (push-to-talk, spec.md §24) -------------------------------------
+
+    def _on_mic_pressed(self) -> None:
+        assert self._recorder is not None
+        try:
+            self._recorder.start()
+        except MicrophoneUnavailableError as exc:
+            self.chat_log.append_message("error", f"Microphone unavailable: {exc}")
+            return
+        self.input_field.setEnabled(False)
+        self.send_button.setEnabled(False)
+        self.status_label.setText("Listening...")
+
+    def _on_mic_released(self) -> None:
+        assert self._recorder is not None
+        audio = self._recorder.stop()
+        self.status_label.setText("Transcribing...")
+
+        self._worker = VoiceTurnWorker(
+            self.agent, self.conversation_id, audio, self._recorder.sample_rate, speak_reply=True
+        )
+        self._worker.transcribed.connect(self._on_voice_transcribed)
+        self._worker.succeeded.connect(self._on_turn_succeeded)
+        self._worker.failed.connect(self._on_voice_failed)
+        self._worker.started_speaking.connect(lambda: self.status_label.setText("Speaking..."))
+        self._worker.finished_speaking.connect(lambda: self.status_label.setText(""))
+        self._worker.finished.connect(self._worker.deleteLater)
+        self._worker.start()
+
+    def _on_voice_transcribed(self, text: str) -> None:
+        self.chat_log.append_message("user", text)
+
+    def _on_voice_failed(self, message: str) -> None:
+        self._set_thinking(False)
+        self.chat_log.append_message("error", message)
 
     # --- Confirmation flow (spec.md §25 "Waiting for confirmation", §28) ------
 

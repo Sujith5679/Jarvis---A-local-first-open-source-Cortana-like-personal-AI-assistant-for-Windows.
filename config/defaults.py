@@ -57,3 +57,11 @@ DEFAULT_REMINDER_POLL_INTERVAL_SECONDS = 30
 
 # --- Global hotkey (spec.md §26) ---
 DEFAULT_HOTKEY = "ctrl+space"
+
+# --- Voice (spec.md §24, fully offline) ---
+# faster-whisper "base": good speed/accuracy tradeoff on CPU for short
+# personal-assistant commands; int8 compute keeps it light.
+DEFAULT_WHISPER_MODEL_SIZE = "base"
+DEFAULT_WHISPER_COMPUTE_TYPE = "int8"
+DEFAULT_AUDIO_SAMPLE_RATE = 16000  # what we record at; matches Whisper's native rate
+DEFAULT_PIPER_VOICE_NAME = "en_US-lessac-medium"

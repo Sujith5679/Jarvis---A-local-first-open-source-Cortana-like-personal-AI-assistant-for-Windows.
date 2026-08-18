@@ -64,6 +64,11 @@ class Settings(BaseSettings):
     jarvis_enable_voice: bool = Field(default=True, alias="JARVIS_ENABLE_VOICE")
     jarvis_enable_wake_word: bool = Field(default=False, alias="JARVIS_ENABLE_WAKE_WORD")
 
+    # --- Voice ---
+    # Optional override; defaults to data_dir/voices/<DEFAULT_PIPER_VOICE_NAME>.onnx
+    # (see voice/tts.py) so a fresh install works without setting anything here.
+    piper_voice_path: str | None = Field(default=None, alias="JARVIS_PIPER_VOICE_PATH")
+
     # --- Future Google integration ---
     google_client_id: str | None = Field(default=None, alias="GOOGLE_CLIENT_ID")
     google_client_secret: str | None = Field(default=None, alias="GOOGLE_CLIENT_SECRET")
@@ -97,6 +102,12 @@ class Settings(BaseSettings):
     @property
     def cache_dir(self) -> Path:
         path = self.data_dir / "cache"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @property
+    def voices_dir(self) -> Path:
+        path = self.data_dir / "voices"
         path.mkdir(parents=True, exist_ok=True)
         return path
 
