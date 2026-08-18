@@ -1,16 +1,22 @@
-"""`list_folder` tool — lists files/subfolders and counts within an indexed
-folder (spec.md §3: "Interact with approved Windows functions" /
-"Search personal files").
+"""`list_folder` / `list_indexed_folders` tools — directory listing and
+counts within an indexed folder (spec.md §3: "Interact with approved Windows
+functions" / "Search personal files").
 
-This only ever returns file *names* and counts, never file *content* — that
-stays read_file's job. It's still gated behind the same indexed-folder
-allowlist as search_files/read_file (spec.md §38 "Allowed reads must be
-limited to... indexed folders... Default deny"): browsing an arbitrary path
-just because it returns names, not content, would silently widen JARVIS's
-file access beyond what the user explicitly granted via §14.1's folder
-selection. Unlike search_files/read_file, this does NOT require the folder
-to have finished RAG ingestion (no parsing/embedding happens here) — it just
-needs to be a currently-enabled indexed folder.
+`list_folder` only ever returns file *names* and counts, never file
+*content* — that stays read_file's job. It's still gated behind the same
+indexed-folder allowlist as search_files/read_file (spec.md §38 "Allowed
+reads must be limited to... indexed folders... Default deny"): browsing an
+arbitrary path just because it returns names, not content, would silently
+widen JARVIS's file access beyond what the user explicitly granted via
+§14.1's folder selection. Unlike search_files/read_file, it does NOT require
+the folder to have finished RAG ingestion (no parsing/embedding happens
+here) — it just needs to be a currently-enabled indexed folder.
+
+`list_indexed_folders` exists so the LLM isn't stuck guessing a path: given
+a vague reference ("my music folder"), it can look up what's actually
+indexed and match by name, then call list_folder with the exact path —
+instead of guessing a plausible-but-wrong path, getting an allowlist
+rejection, and wrongly telling the user "that isn't indexed" when it is.
 """
 
 from __future__ import annotations
@@ -63,12 +69,19 @@ def _scan(
                 entries.append(str(child.relative_to(root)))
 
 
+async def list_indexed_folders_handler() -> dict[str, Any]:
+    folders = folders_repo.list_folders(enabled_only=True)
+    return {"folders": [{"path": f["path"], "added_at": f["added_at"]} for f in folders]}
+
+
 async def list_folder_handler(path: str, recursive: bool = False) -> dict[str, Any]:
     if not folders_repo.is_path_within_indexed_folders(path):
         return {
             "error": (
-                "That folder isn't in JARVIS's allowed folders. Add it first via "
-                "Settings > Manage Folders, then ask again."
+                f"'{path}' doesn't match any currently indexed folder. Call "
+                "list_indexed_folders to see what's actually available and match by "
+                "name before assuming nothing is indexed, or ask the user to add it via "
+                "Settings > Manage Folders."
             )
         }
 
@@ -97,6 +110,24 @@ async def list_folder_handler(path: str, recursive: bool = False) -> dict[str, A
     }
 
 
+LIST_INDEXED_FOLDERS = Tool(
+    metadata=ToolMetadata(
+        name="list_indexed_folders",
+        description=(
+            "List every folder JARVIS currently has indexed/allowed, with their exact paths. "
+            "Call this FIRST whenever the user refers to a folder by a partial or vague name "
+            "(e.g. 'my music folder', 'the new musics folder') and you don't already know its "
+            "exact path — match the name against this list before calling list_folder, and "
+            "before ever telling the user a folder 'isn't indexed'."
+        ),
+        requires_confirmation=False,
+        risk_level="low",
+        timeout_seconds=5.0,
+    ),
+    input_schema={"type": "object", "properties": {}},
+    handler=list_indexed_folders_handler,
+)
+
 LIST_FOLDER = Tool(
     metadata=ToolMetadata(
         name="list_folder",
@@ -105,7 +136,8 @@ LIST_FOLDER = Tool(
             "count and a breakdown by extension. Use this to answer questions like 'how many "
             "files are in X' or 'what's in this folder' — it does not read file content, only "
             "names/counts (use search_files/read_file for content). Set recursive=true to "
-            "include subfolders in the count."
+            "include subfolders in the count. Requires the exact indexed path — if you don't "
+            "have it, call list_indexed_folders first."
         ),
         requires_confirmation=False,
         risk_level="low",
@@ -128,4 +160,5 @@ LIST_FOLDER = Tool(
 
 
 def register(registry) -> None:
+    registry.register(LIST_INDEXED_FOLDERS)
     registry.register(LIST_FOLDER)
