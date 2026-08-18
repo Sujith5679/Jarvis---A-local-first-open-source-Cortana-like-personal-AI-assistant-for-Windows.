@@ -43,6 +43,43 @@ On first run, JARVIS will:
 3. Build the initial local search index in the background.
 4. Let you configure startup-with-Windows preference in Settings.
 
+## Web search (SearXNG)
+
+`web_search`/`open_webpage` need a running SearXNG instance. No Docker required —
+it runs as a plain Python/Flask app:
+
+```bat
+:: Outside the jarvis repo, e.g. in your user folder:
+git clone --no-checkout https://github.com/searxng/searxng.git
+cd searxng
+:: Windows can't check out one file with a ':' in its name (a Linux systemd
+:: template) — sparse-checkout everything except it:
+git sparse-checkout init --no-cone
+echo /* > .git\info\sparse-checkout
+echo !/utils/templates/etc/httpd/sites-available/searxng.conf:socket >> .git\info\sparse-checkout
+git sparse-checkout reapply
+
+python -m venv .venv
+.venv\Scripts\pip install -r requirements.txt tzdata
+```
+
+Then two small edits before first run:
+1. In `searx/settings.yml`, under `search:`, add `- json` to the `formats:` list
+   (SearXNG disables the JSON API by default — our tools need it).
+2. In the same file, replace the default `secret_key: "ultrasecretkey"` with a random
+   value (e.g. `python -c "import secrets; print(secrets.token_hex(32))"`).
+
+One more Windows-only fix: `searx/valkeydb.py` unconditionally imports the Unix-only
+`pwd` module (only actually used in an optional Redis/Valkey error-logging path we
+don't use). Move `import pwd` from the top of the file into the `except ImportError`-
+guarded block right before its one use site, so it only gets touched on Linux.
+
+Run it with `.venv\Scripts\python.exe -m searx.webapp` (serves on
+`http://127.0.0.1:8888` by default), then set `SEARXNG_URL` in `.env` to match. It
+needs to be running whenever you want `web_search`/`open_webpage` to work — without
+it, JARVIS degrades gracefully (local features keep working, web search reports
+itself as temporarily unavailable) rather than failing.
+
 ## Development
 
 ```bat
