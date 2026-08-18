@@ -47,7 +47,7 @@ from llm.manager import LLMManager
 from security.audit import log_event
 from security.permissions import check_permission
 from storage.repositories import conversations as conv_repo
-from tools import file_reader, file_search, notes, reminders, tasks
+from tools import file_listing, file_reader, file_search, notes, reminders, tasks
 from tools.registry import Tool, ToolRegistry
 
 from agent.prompts import build_system_prompt
@@ -66,6 +66,7 @@ def build_default_tool_registry() -> ToolRegistry:
     registry = ToolRegistry()
     file_search.register(registry)
     file_reader.register(registry)
+    file_listing.register(registry)
     notes.register(registry)
     tasks.register(registry)
     reminders.register(registry)
