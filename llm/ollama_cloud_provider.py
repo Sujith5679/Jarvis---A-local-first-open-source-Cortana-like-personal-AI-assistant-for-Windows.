@@ -4,15 +4,29 @@ Ollama Cloud speaks the same `/api/chat` contract as local Ollama
 (https://github.com/ollama/ollama/blob/main/docs/api.md#generate-a-chat-completion),
 authenticated with a bearer API key instead of being open on localhost.
 
+Confirmed live: Ollama Cloud's `/api/chat` requires
+`message.tool_calls[].function.arguments` to be a JSON *object*, and rejects
+it outright (HTTP 400, "Value looks like object, but can't find closing '}'
+symbol") if it's a JSON-encoded *string* instead. Groq/OpenAI require the
+opposite — arguments MUST be a string there. `agent/graph.py` builds
+`llm_messages` once, in the OpenAI/Groq shape (since that's the primary
+provider), and reuses that same list across a mid-turn fallback to whichever
+provider ends up serving the next call. Rather than push this provider quirk
+into the shared agent loop, `_translate_messages()` below adapts a copy of
+the messages to Ollama's expected shape right before sending — Groq and any
+future OpenAI-compatible provider need no such translation.
+
 NOTE: Ollama Cloud's hosted API is newer than Groq's and its exact contract
-may shift. `base_url` and the request/response shape are isolated in this one
-class specifically so they're easy to correct against real credentials
-without touching `LLMManager` or any caller.
+may shift further. `base_url` and the request/response shape are isolated in
+this one class specifically so they're easy to correct against real
+credentials without touching `LLMManager` or any caller.
 """
 
 from __future__ import annotations
 
 import asyncio
+import copy
+import json
 import logging
 
 import httpx
@@ -39,6 +53,27 @@ OLLAMA_CLOUD_API_BASE = "https://ollama.com"
 DEFAULT_MODEL = "gpt-oss:120b"
 
 
+def _translate_messages(messages: list[dict]) -> list[dict]:
+    """Returns a deep copy of `messages` with any OpenAI-style (string)
+    `tool_calls[].function.arguments` converted to the object shape Ollama's
+    /api/chat requires. Leaves everything else — including messages that
+    already have object arguments — untouched."""
+    translated = copy.deepcopy(messages)
+    for message in translated:
+        for call in message.get("tool_calls") or []:
+            fn = call.get("function")
+            if not fn:
+                continue
+            args = fn.get("arguments")
+            if isinstance(args, str):
+                try:
+                    fn["arguments"] = json.loads(args) if args else {}
+                except json.JSONDecodeError:
+                    logger.warning("Could not parse tool_call arguments as JSON: %r", args)
+                    fn["arguments"] = {}
+    return translated
+
+
 class OllamaCloudProvider:
     name = "ollama_cloud"
 
@@ -62,7 +97,11 @@ class OllamaCloudProvider:
         messages: list[dict],
         tools: list[dict] | None = None,
     ) -> LLMResponse:
-        payload: dict = {"model": self.model, "messages": messages, "stream": False}
+        payload: dict = {
+            "model": self.model,
+            "messages": _translate_messages(messages),
+            "stream": False,
+        }
         if tools:
             payload["tools"] = tools
 
