@@ -47,7 +47,7 @@ from llm.manager import LLMManager
 from security.audit import log_event
 from security.permissions import check_permission
 from storage.repositories import conversations as conv_repo
-from tools import file_listing, file_reader, file_search, notes, reminders, tasks
+from tools import file_listing, file_reader, file_search, file_writer, notes, reminders, tasks
 from tools.registry import Tool, ToolRegistry
 
 from agent.prompts import build_system_prompt
@@ -67,6 +67,7 @@ def build_default_tool_registry() -> ToolRegistry:
     file_search.register(registry)
     file_reader.register(registry)
     file_listing.register(registry)
+    file_writer.register(registry)
     notes.register(registry)
     tasks.register(registry)
     reminders.register(registry)
@@ -131,6 +132,9 @@ def _summarize_confirmed_result(tool_name: str, arguments: dict, result: dict) -
         return f"Done — deleted note #{arguments.get('note_id')}."
     if tool_name == "delete_task":
         return f"Done — deleted task #{arguments.get('task_id')}."
+    if tool_name == "write_file":
+        verb = "Overwrote" if result.get("overwritten") else "Saved"
+        return f"Done — {verb} {result.get('bytes_written', 0)} bytes to {result.get('path')}."
     return f"Done — {tool_name} completed: {result}"
 
 

@@ -92,6 +92,77 @@ async def test_confirm_and_execute_denied_does_not_delete(real_db):
 
 
 @pytest.mark.asyncio
+async def test_write_file_pauses_for_confirmation_without_writing(real_db, tmp_path):
+    from storage.repositories import folders as folders_repo
+
+    folder = tmp_path / "notes"
+    folder.mkdir()
+    folders_repo.add_folder(str(folder))
+    target = folder / "todo.txt"
+
+    responses = [
+        LLMResponse(
+            content="",
+            provider="scripted",
+            model="x",
+            tool_calls=[
+                _tool_call(
+                    "call_1", "write_file", {"path": str(target), "content": "buy milk"}
+                )
+            ],
+        ),
+    ]
+    agent = Agent(llm_manager=LLMManager([_ScriptedProvider(responses)]), settings=real_db)
+    conv_id = conv_repo.create_conversation()
+
+    state = await agent.run_turn(conv_id, "save this as todo.txt")
+
+    assert state["requires_confirmation"] is True
+    assert state["confirmation_request"]["tool"] == "write_file"
+    assert not target.exists()  # nothing written yet
+
+
+@pytest.mark.asyncio
+async def test_confirm_and_execute_approved_writes_file(real_db, tmp_path):
+    from storage.repositories import folders as folders_repo
+
+    folder = tmp_path / "notes"
+    folder.mkdir()
+    folders_repo.add_folder(str(folder))
+    target = folder / "todo.txt"
+
+    agent = Agent(llm_manager=LLMManager([_ScriptedProvider([])]), settings=real_db)
+    conv_id = conv_repo.create_conversation()
+
+    state = await agent.confirm_and_execute(
+        conv_id, "write_file", {"path": str(target), "content": "buy milk"}, approved=True
+    )
+
+    assert state["error"] is None
+    assert target.read_text(encoding="utf-8") == "buy milk"
+    assert str(target) in state["response"]
+
+
+@pytest.mark.asyncio
+async def test_confirm_and_execute_denied_does_not_write_file(real_db, tmp_path):
+    from storage.repositories import folders as folders_repo
+
+    folder = tmp_path / "notes"
+    folder.mkdir()
+    folders_repo.add_folder(str(folder))
+    target = folder / "todo.txt"
+
+    agent = Agent(llm_manager=LLMManager([_ScriptedProvider([])]), settings=real_db)
+    conv_id = conv_repo.create_conversation()
+
+    await agent.confirm_and_execute(
+        conv_id, "write_file", {"path": str(target), "content": "buy milk"}, approved=False
+    )
+
+    assert not target.exists()
+
+
+@pytest.mark.asyncio
 async def test_low_risk_tool_does_not_require_confirmation(real_db):
     responses = [
         LLMResponse(
