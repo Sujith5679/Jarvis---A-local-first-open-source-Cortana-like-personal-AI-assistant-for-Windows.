@@ -47,7 +47,17 @@ from llm.manager import LLMManager
 from security.audit import log_event
 from security.permissions import check_permission
 from storage.repositories import conversations as conv_repo
-from tools import file_listing, file_reader, file_search, file_writer, notes, reminders, tasks
+from tools import (
+    file_listing,
+    file_reader,
+    file_search,
+    file_writer,
+    notes,
+    reminders,
+    tasks,
+    web_reader,
+    web_search,
+)
 from tools.registry import Tool, ToolRegistry
 
 from agent.prompts import build_system_prompt
@@ -60,7 +70,7 @@ TOOL_RESULT_MAX_CHARS = 4000
 
 
 def build_default_tool_registry() -> ToolRegistry:
-    """Phase 2/3 tools. Later phases (web/windows) add their own
+    """Phase 2/3/4 tools. Later phases (windows) add their own
     `register(registry)` calls here without touching the rest of this
     module."""
     registry = ToolRegistry()
@@ -71,6 +81,8 @@ def build_default_tool_registry() -> ToolRegistry:
     notes.register(registry)
     tasks.register(registry)
     reminders.register(registry)
+    web_search.register(registry)
+    web_reader.register(registry)
     return registry
 
 
@@ -102,16 +114,19 @@ def _extract_citations(tool_results: list[dict]) -> list[dict]:
     citations: list[dict] = []
     for entry in tool_results:
         result = entry.get("result") or {}
-        if isinstance(result.get("results"), list):  # search_files shape
+        if isinstance(result.get("results"), list):
             for r in result["results"]:
-                citations.append(
-                    {
-                        "filename": r.get("filename"),
-                        "path": r.get("path"),
-                        "page": r.get("page"),
-                        "section": r.get("section"),
-                    }
-                )
+                if "filename" in r:  # search_files shape
+                    citations.append(
+                        {
+                            "filename": r.get("filename"),
+                            "path": r.get("path"),
+                            "page": r.get("page"),
+                            "section": r.get("section"),
+                        }
+                    )
+                elif "url" in r:  # web_search shape
+                    citations.append({"title": r.get("title"), "url": r.get("url")})
         elif result.get("filename"):  # read_file shape
             citations.append(
                 {
@@ -119,6 +134,15 @@ def _extract_citations(tool_results: list[dict]) -> list[dict]:
                     "path": result.get("path"),
                     "page": result.get("page"),
                     "section": result.get("section"),
+                }
+            )
+        elif result.get("url"):  # open_webpage shape
+            citations.append(
+                {
+                    "title": result.get("title"),
+                    "url": result.get("url"),
+                    "domain": result.get("domain"),
+                    "retrieved_at": result.get("retrieved_at"),
                 }
             )
     return citations
