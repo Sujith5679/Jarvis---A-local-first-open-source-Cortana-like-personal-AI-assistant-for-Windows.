@@ -80,6 +80,24 @@ needs to be running whenever you want `web_search`/`open_webpage` to work — wi
 it, JARVIS degrades gracefully (local features keep working, web search reports
 itself as temporarily unavailable) rather than failing.
 
+## Voice (push-to-talk)
+
+Fully local/offline — no separate service to run, unlike SearXNG. Speech-to-text
+(faster-whisper) downloads its model automatically on first use. Text-to-speech
+(Piper) needs a voice model downloaded once:
+
+```bat
+mkdir data\voices
+.venv\Scripts\python.exe -m piper.download_voices en_US-lessac-medium --download-dir data\voices
+```
+
+Then just hold the 🎤 button in the chat window to talk, release to send. Set
+`JARVIS_ENABLE_VOICE=false` in `.env` to hide the mic button entirely. If no voice
+model is found, JARVIS falls back to text-only replies rather than failing.
+
+To use a different voice, browse [available voices](https://github.com/rhasspy/piper/blob/master/VOICES.md)
+and set `JARVIS_PIPER_VOICE_PATH` in `.env` to the downloaded `.onnx` file's path.
+
 ## Development
 
 ```bat
