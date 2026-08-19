@@ -1,62 +1,46 @@
-"""Local speech-to-text via faster-whisper (spec.md §24).
+"""Speech-to-text provider dispatch (spec.md §24), mirroring `llm/manager.py`'s
+Groq-primary/fallback pattern for the LLM.
 
-Fully offline once the model weights are cached locally (downloaded from
-Hugging Face on first use — same pattern as rag/embeddings.py's local
-embedding model). STT failure must fall back to text mode (spec.md §32):
-callers catch `TranscriptionError` and let the user type instead of being
-blocked from using JARVIS at all.
+Two backends behind one interface:
+- "groq" (voice/stt_groq.py): Groq's hosted Whisper API, same GROQ_API_KEY
+  as the LLM. Fast, no local RAM/CPU cost, needs internet + API quota.
+- "local" (voice/stt_local.py): faster-whisper, fully offline. Heavier and
+  slower, but works with no internet and no account.
+
+Selected via `JARVIS_STT_PROVIDER` (default "groq" once a Groq key is
+configured). If the configured provider is "groq" but fails for any reason
+(rate limit, network, terms not accepted, no key), this falls back to local
+rather than failing the request outright — local is always available.
+Explicitly choosing "local" skips Groq entirely (e.g. for offline/privacy
+use), matching spec.md §33/§34.
 """
 
 from __future__ import annotations
 
 import logging
-from functools import lru_cache
 
 import numpy as np
-from config.defaults import DEFAULT_WHISPER_COMPUTE_TYPE, DEFAULT_WHISPER_MODEL_SIZE
+from config.settings import Settings, get_settings
+
+from voice import stt_groq, stt_local
+from voice.stt_local import TranscriptionError
+
+__all__ = ["TranscriptionError", "transcribe"]
 
 logger = logging.getLogger("jarvis.voice.stt")
 
-WHISPER_SAMPLE_RATE = 16000  # Whisper models expect 16kHz mono audio
 
-
-class TranscriptionError(Exception):
-    pass
-
-
-@lru_cache(maxsize=1)
-def _get_model():
-    # Imported lazily: faster-whisper pulls in ctranslate2, slow to import
-    # and unnecessary for anything that doesn't touch voice.
-    from faster_whisper import WhisperModel
-
-    return WhisperModel(
-        DEFAULT_WHISPER_MODEL_SIZE, device="cpu", compute_type=DEFAULT_WHISPER_COMPUTE_TYPE
-    )
-
-
-def resample_to_16k(audio: np.ndarray, sample_rate: int) -> np.ndarray:
-    """Nearest-neighbor resample — recording already happens at 16kHz
-    (config.defaults.DEFAULT_AUDIO_SAMPLE_RATE) so this is normally a no-op;
-    kept for robustness against any other audio source."""
-    if sample_rate == WHISPER_SAMPLE_RATE or audio.size == 0:
-        return audio
-    ratio = WHISPER_SAMPLE_RATE / sample_rate
-    new_len = max(int(len(audio) * ratio), 1)
-    idx = np.clip((np.arange(new_len) / ratio).astype(np.int64), 0, len(audio) - 1)
-    return audio[idx]
-
-
-def transcribe(audio: np.ndarray, sample_rate: int) -> str:
-    """Transcribes mono float32 audio to text. Returns "" for empty/silent
-    input; raises TranscriptionError on an actual engine failure."""
+async def transcribe(
+    audio: np.ndarray, sample_rate: int, settings: Settings | None = None
+) -> str:
     if audio.size == 0:
         return ""
-    try:
-        model = _get_model()
-        audio16k = resample_to_16k(audio.astype("float32"), sample_rate)
-        segments, _info = model.transcribe(audio16k, language="en", beam_size=1)
-        return " ".join(seg.text.strip() for seg in segments).strip()
-    except Exception as exc:
-        logger.exception("Transcription failed")
-        raise TranscriptionError(str(exc)) from exc
+    settings = settings or get_settings()
+
+    if settings.stt_provider == "groq" and settings.has_groq():
+        try:
+            return await stt_groq.transcribe(audio, sample_rate, settings)
+        except Exception as exc:
+            logger.warning("Groq STT failed, falling back to local: %s", exc)
+
+    return stt_local.transcribe(audio, sample_rate)

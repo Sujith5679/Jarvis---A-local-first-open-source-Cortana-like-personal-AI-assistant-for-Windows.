@@ -133,8 +133,11 @@ class VoiceTurnWorker(QThread):
         self.speak_reply = speak_reply
 
     def run(self) -> None:
+        asyncio.run(self._run_async())
+
+    async def _run_async(self) -> None:
         try:
-            text = stt_transcribe(self.audio, self.sample_rate).strip()
+            text = (await stt_transcribe(self.audio, self.sample_rate)).strip()
         except TranscriptionError as exc:
             self.failed.emit(f"Could not understand that: {exc}")
             return
@@ -145,7 +148,7 @@ class VoiceTurnWorker(QThread):
         self.transcribed.emit(text)
 
         try:
-            state: AgentState = asyncio.run(self.agent.run_turn(self.conversation_id, text))
+            state: AgentState = await self.agent.run_turn(self.conversation_id, text)
         except Exception as exc:  # pragma: no cover - defensive; agent handles its own errors
             logger.exception("Unexpected error running voice-originated agent turn")
             self.failed.emit(str(exc))
@@ -161,7 +164,7 @@ class VoiceTurnWorker(QThread):
         )
         if should_speak:
             try:
-                audio, sr = tts_synthesize(state["response"])
+                audio, sr = await tts_synthesize(state["response"])
                 self.started_speaking.emit()
                 play_audio(audio, sr)
             except SynthesisError as exc:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from voice.tts import SynthesisError, resolve_voice_path, synthesize
+from voice.tts_local import SynthesisError, resolve_voice_path, synthesize
 
 
 def test_empty_text_returns_empty_audio_without_loading_engine():
@@ -45,8 +45,8 @@ def test_synthesize_engine_failure_wrapped(monkeypatch, tmp_path):
         def synthesize(self, text):
             raise RuntimeError("onnx exploded")
 
-    monkeypatch.setattr("voice.tts.resolve_voice_path", lambda settings=None: voice_path)
-    monkeypatch.setattr("voice.tts._get_voice", lambda path: _FailingVoice())
+    monkeypatch.setattr("voice.tts_local.resolve_voice_path", lambda settings=None: voice_path)
+    monkeypatch.setattr("voice.tts_local._get_voice", lambda path: _FailingVoice())
 
     with pytest.raises(SynthesisError):
         synthesize("hello")

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from voice.stt import TranscriptionError, resample_to_16k, transcribe
+from voice.stt_local import TranscriptionError, resample_to_16k, transcribe
 
 
 def test_resample_noop_when_already_16k():
@@ -31,7 +31,7 @@ def test_transcribe_wraps_engine_failure(monkeypatch):
         def transcribe(self, *a, **kw):
             raise RuntimeError("engine exploded")
 
-    monkeypatch.setattr("voice.stt._get_model", lambda: _FailingModel())
+    monkeypatch.setattr("voice.stt_local._get_model", lambda: _FailingModel())
     with pytest.raises(TranscriptionError):
         transcribe(np.ones(100, dtype="float32"), 16000)
 
@@ -45,7 +45,7 @@ def test_transcribe_joins_segments(monkeypatch):
         def transcribe(self, audio, language, beam_size):
             return [_Segment(" hello "), _Segment("world ")], object()
 
-    monkeypatch.setattr("voice.stt._get_model", lambda: _FakeModel())
+    monkeypatch.setattr("voice.stt_local._get_model", lambda: _FakeModel())
     result = transcribe(np.ones(100, dtype="float32"), 16000)
     assert result == "hello world"
 
@@ -56,7 +56,7 @@ def test_transcribe_real_model_roundtrip():
     downloads/loads the model on first run). Uses Piper to generate a short,
     known utterance rather than requiring a real microphone."""
     from piper import PiperVoice
-    from voice.tts import resolve_voice_path
+    from voice.tts_local import resolve_voice_path
 
     voice_path = resolve_voice_path()
     if not voice_path.exists():

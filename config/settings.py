@@ -65,8 +65,13 @@ class Settings(BaseSettings):
     jarvis_enable_wake_word: bool = Field(default=False, alias="JARVIS_ENABLE_WAKE_WORD")
 
     # --- Voice ---
+    # "groq" (cloud, fast, no local RAM/CPU cost) or "local" (offline).
+    # See voice/stt.py, voice/tts.py — both fall back to local automatically
+    # if the configured Groq backend fails for any reason.
+    stt_provider: str = Field(default="groq", alias="JARVIS_STT_PROVIDER")
+    tts_provider: str = Field(default="groq", alias="JARVIS_TTS_PROVIDER")
     # Optional override; defaults to data_dir/voices/<DEFAULT_PIPER_VOICE_NAME>.onnx
-    # (see voice/tts.py) so a fresh install works without setting anything here.
+    # (see voice/tts_local.py) so a fresh install works without setting anything here.
     piper_voice_path: str | None = Field(default=None, alias="JARVIS_PIPER_VOICE_PATH")
 
     # --- Future Google integration ---
