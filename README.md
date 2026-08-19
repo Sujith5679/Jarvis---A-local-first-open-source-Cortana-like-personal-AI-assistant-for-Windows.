@@ -82,20 +82,31 @@ itself as temporarily unavailable) rather than failing.
 
 ## Voice (push-to-talk)
 
-Fully local/offline — no separate service to run, unlike SearXNG. Speech-to-text
-(faster-whisper) downloads its model automatically on first use. Text-to-speech
-(Piper) needs a voice model downloaded once:
+Two backends for both speech-to-text and text-to-speech, selected per `.env`:
 
-```bat
-mkdir data\voices
-.venv\Scripts\python.exe -m piper.download_voices en_US-lessac-medium --download-dir data\voices
-```
+- **`groq`** (default) — Groq's hosted Whisper (STT) and Orpheus (TTS) models, using
+  the same `GROQ_API_KEY` you already have. Fast, no local RAM/CPU cost, needs
+  internet + API quota. **TTS needs a one-time step**: accept the Orpheus model's
+  terms at
+  https://console.groq.com/playground?model=canopylabs%2Forpheus-v1-english — until
+  then, TTS transparently falls back to local (see below), no config change needed.
+- **`local`** — faster-whisper (STT, downloads its model automatically on first use)
+  and Piper (TTS, needs a voice model downloaded once):
 
-Then just hold the 🎤 button in the chat window to talk, release to send. Set
-`JARVIS_ENABLE_VOICE=false` in `.env` to hide the mic button entirely. If no voice
-model is found, JARVIS falls back to text-only replies rather than failing.
+  ```bat
+  mkdir data\voices
+  .venv\Scripts\python.exe -m piper.download_voices en_US-lessac-medium --download-dir data\voices
+  ```
 
-To use a different voice, browse [available voices](https://github.com/rhasspy/piper/blob/master/VOICES.md)
+Set `JARVIS_STT_PROVIDER=local` / `JARVIS_TTS_PROVIDER=local` in `.env` for fully
+offline voice (spec.md §33/§34's privacy/offline modes). Whichever provider you
+pick, a failure there always falls back to local automatically — voice degrades to
+text-only rather than failing outright if neither is available.
+
+Hold the 🎤 button in the chat window to talk, release to send. Set
+`JARVIS_ENABLE_VOICE=false` in `.env` to hide the mic button entirely.
+
+To use a different local voice, browse [available voices](https://github.com/rhasspy/piper/blob/master/VOICES.md)
 and set `JARVIS_PIPER_VOICE_PATH` in `.env` to the downloaded `.onnx` file's path.
 
 ## Development
