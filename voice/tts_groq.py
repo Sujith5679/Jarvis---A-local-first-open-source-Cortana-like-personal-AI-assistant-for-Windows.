@@ -26,7 +26,10 @@ logger = logging.getLogger("jarvis.voice.tts_groq")
 
 GROQ_SPEECH_URL = "https://api.groq.com/openai/v1/audio/speech"
 DEFAULT_GROQ_TTS_MODEL = "canopylabs/orpheus-v1-english"
-DEFAULT_GROQ_TTS_VOICE = "tara"
+# Confirmed live: this model's valid voice set is exactly
+# [autumn, diana, hannah, austin, daniel, troy] — "tara" (a different
+# Orpheus release's voice name) was wrong and always failed with a 400.
+DEFAULT_GROQ_TTS_VOICE = "autumn"
 
 
 class GroqTTSError(Exception):
