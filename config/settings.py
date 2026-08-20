@@ -65,11 +65,15 @@ class Settings(BaseSettings):
     jarvis_enable_wake_word: bool = Field(default=False, alias="JARVIS_ENABLE_WAKE_WORD")
 
     # --- Voice ---
-    # "groq" (cloud, fast, no local RAM/CPU cost) or "local" (offline).
-    # See voice/stt.py, voice/tts.py — both fall back to local automatically
-    # if the configured Groq backend fails for any reason.
-    stt_provider: str = Field(default="groq", alias="JARVIS_STT_PROVIDER")
-    tts_provider: str = Field(default="groq", alias="JARVIS_TTS_PROVIDER")
+    # Ordered, comma-separated provider chain — same idea as LLMManager's
+    # Groq-then-Ollama-Cloud chain. Each is tried in order; "local" is always
+    # attempted as a final safety net even if omitted or every listed
+    # provider fails, so voice never simply stops working. See voice/stt.py,
+    # voice/tts.py for the actual dispatch logic.
+    stt_providers_raw: str = Field(default="groq,deepgram,local", alias="JARVIS_STT_PROVIDERS")
+    tts_providers_raw: str = Field(default="groq,deepgram,local", alias="JARVIS_TTS_PROVIDERS")
+    # Deepgram is a separate service from Groq/Ollama — its own key.
+    deepgram_api_key: str | None = Field(default=None, alias="DEEPGRAM_API_KEY")
     # Optional override; defaults to data_dir/voices/<DEFAULT_PIPER_VOICE_NAME>.onnx
     # (see voice/tts_local.py) so a fresh install works without setting anything here.
     piper_voice_path: str | None = Field(default=None, alias="JARVIS_PIPER_VOICE_PATH")
@@ -121,6 +125,17 @@ class Settings(BaseSettings):
 
     def has_ollama_cloud(self) -> bool:
         return bool(self.ollama_cloud_api_key)
+
+    def has_deepgram(self) -> bool:
+        return bool(self.deepgram_api_key)
+
+    @property
+    def stt_providers(self) -> list[str]:
+        return [p.strip() for p in self.stt_providers_raw.split(",") if p.strip()]
+
+    @property
+    def tts_providers(self) -> list[str]:
+        return [p.strip() for p in self.tts_providers_raw.split(",") if p.strip()]
 
 
 @lru_cache(maxsize=1)

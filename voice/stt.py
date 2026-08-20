@@ -1,33 +1,50 @@
 """Speech-to-text provider dispatch (spec.md §24), mirroring `llm/manager.py`'s
-Groq-primary/fallback pattern for the LLM.
+provider-chain pattern for the LLM.
 
-Two backends behind one interface:
+Three backends behind one interface, tried in the configured order:
 - "groq" (voice/stt_groq.py): Groq's hosted Whisper API, same GROQ_API_KEY
-  as the LLM. Fast, no local RAM/CPU cost, needs internet + API quota.
-- "local" (voice/stt_local.py): faster-whisper, fully offline. Heavier and
-  slower, but works with no internet and no account.
+  as the LLM.
+- "deepgram" (voice/stt_deepgram.py): Deepgram's Listen API, separate
+  DEEPGRAM_API_KEY.
+- "local" (voice/stt_local.py): faster-whisper, fully offline, no key.
 
-Selected via `JARVIS_STT_PROVIDER` (default "groq" once a Groq key is
-configured). If the configured provider is "groq" but fails for any reason
-(rate limit, network, terms not accepted, no key), this falls back to local
-rather than failing the request outright — local is always available.
-Explicitly choosing "local" skips Groq entirely (e.g. for offline/privacy
-use), matching spec.md §33/§34.
+Order configured via `JARVIS_STT_PROVIDERS` (comma-separated, default
+"groq,deepgram,local"). A backend without its API key configured is skipped
+automatically. "local" is always attempted as a final safety net — even if
+left out of the configured chain, or if every configured provider fails —
+so voice never simply stops working as long as local is usable. Explicitly
+setting `JARVIS_STT_PROVIDERS=local` skips every cloud backend, for
+offline/privacy use (spec.md §33/§34).
+
+NOTE: cloud backends are called via `module.transcribe(...)` — a fresh
+attribute lookup on the module object at call time, not a pre-bound
+function reference — specifically so tests can monkeypatch
+`voice.stt_groq.transcribe` (etc.) and have the dispatcher actually pick it
+up. Binding `stt_groq.transcribe` into a dict at import time would capture
+the original function forever, silently defeating that monkeypatching (and
+sending real HTTP requests during "mocked" tests).
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 import numpy as np
 from config.settings import Settings, get_settings
 
-from voice import stt_groq, stt_local
+from voice import stt_deepgram, stt_groq, stt_local
 from voice.stt_local import TranscriptionError
 
 __all__ = ["TranscriptionError", "transcribe"]
 
 logger = logging.getLogger("jarvis.voice.stt")
+
+_CLOUD_MODULES = {"groq": stt_groq, "deepgram": stt_deepgram}
+_CLOUD_AVAILABILITY: dict[str, Callable[[Settings], bool]] = {
+    "groq": Settings.has_groq,
+    "deepgram": Settings.has_deepgram,
+}
 
 
 async def transcribe(
@@ -37,10 +54,33 @@ async def transcribe(
         return ""
     settings = settings or get_settings()
 
-    if settings.stt_provider == "groq" and settings.has_groq():
-        try:
-            return await stt_groq.transcribe(audio, sample_rate, settings)
-        except Exception as exc:
-            logger.warning("Groq STT failed, falling back to local: %s", exc)
+    tried_local = False
+    last_exc: Exception | None = None
+    for name in settings.stt_providers:
+        if name == "local":
+            tried_local = True
+            try:
+                return stt_local.transcribe(audio, sample_rate)
+            except Exception as exc:
+                logger.warning("local STT failed: %s", exc)
+                last_exc = exc
+            continue
 
-    return stt_local.transcribe(audio, sample_rate)
+        module = _CLOUD_MODULES.get(name)
+        is_available = _CLOUD_AVAILABILITY.get(name)
+        if module is None or is_available is None:
+            logger.warning("Unknown STT provider %r in JARVIS_STT_PROVIDERS, skipping", name)
+            continue
+        if not is_available(settings):
+            continue
+        try:
+            return await module.transcribe(audio, sample_rate, settings)
+        except Exception as exc:
+            logger.warning("%s STT failed, trying next: %s", name, exc)
+            last_exc = exc
+
+    if not tried_local:
+        return stt_local.transcribe(audio, sample_rate)
+    if last_exc is not None:
+        raise last_exc
+    return ""

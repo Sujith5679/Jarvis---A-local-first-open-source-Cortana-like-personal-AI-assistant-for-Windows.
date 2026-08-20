@@ -82,26 +82,34 @@ itself as temporarily unavailable) rather than failing.
 
 ## Voice (push-to-talk)
 
-Two backends for both speech-to-text and text-to-speech, selected per `.env`:
+Three backends for both speech-to-text and text-to-speech, tried in order (an
+ordered chain per `.env`, same idea as the Groq→Ollama Cloud LLM fallback):
 
-- **`groq`** (default) — Groq's hosted Whisper (STT) and Orpheus (TTS) models, using
-  the same `GROQ_API_KEY` you already have. Fast, no local RAM/CPU cost, needs
+- **`groq`** (tried first) — Groq's hosted Whisper (STT) and Orpheus (TTS) models,
+  using the same `GROQ_API_KEY` you already have. Fast, no local RAM/CPU cost, needs
   internet + API quota. **TTS needs a one-time step**: accept the Orpheus model's
   terms at
   https://console.groq.com/playground?model=canopylabs%2Forpheus-v1-english — until
-  then, TTS transparently falls back to local (see below), no config change needed.
-- **`local`** — faster-whisper (STT, downloads its model automatically on first use)
-  and Piper (TTS, needs a voice model downloaded once):
+  then, TTS transparently skips to the next backend, no config change needed.
+- **`deepgram`** (tried second) — Deepgram's Listen (STT) and Aura (TTS) APIs. A
+  separate service from Groq/Ollama — sign up at https://deepgram.com and set
+  `DEEPGRAM_API_KEY` in `.env`. New accounts get a $200 one-time credit (not a
+  recurring free tier); after that it's pay-per-use (~$0.006/min).
+- **`local`** (final safety net, always available) — faster-whisper (STT, downloads
+  its model automatically on first use) and Piper (TTS, needs a voice model
+  downloaded once):
 
   ```bat
   mkdir data\voices
   .venv\Scripts\python.exe -m piper.download_voices en_US-lessac-medium --download-dir data\voices
   ```
 
-Set `JARVIS_STT_PROVIDER=local` / `JARVIS_TTS_PROVIDER=local` in `.env` for fully
-offline voice (spec.md §33/§34's privacy/offline modes). Whichever provider you
-pick, a failure there always falls back to local automatically — voice degrades to
-text-only rather than failing outright if neither is available.
+Order/membership configured via `JARVIS_STT_PROVIDERS` / `JARVIS_TTS_PROVIDERS`
+(comma-separated, default `groq,deepgram,local`). A backend without its key
+configured is skipped automatically; `local` is always attempted as a last resort
+even if every configured cloud backend fails, so voice degrades to text-only rather
+than failing outright. Set either to just `local` for fully offline voice (spec.md
+§33/§34's privacy/offline modes).
 
 Hold the 🎤 button in the chat window to talk, release to send. Set
 `JARVIS_ENABLE_VOICE=false` in `.env` to hide the mic button entirely.
