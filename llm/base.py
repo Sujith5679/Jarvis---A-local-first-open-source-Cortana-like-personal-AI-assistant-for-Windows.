@@ -10,6 +10,8 @@ directly.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Protocol, runtime_checkable
 
 
@@ -63,7 +65,37 @@ class ProviderTimeoutError(ProviderError):
 
 
 class ProviderRateLimitError(ProviderError):
-    pass
+    """`retry_after`, when known, is how many seconds the provider says to
+    wait before its rate-limit window resets — read from the response
+    (standard `Retry-After` header, or a provider-specific equivalent),
+    never guessed. `None` means the provider gave no timing signal."""
+
+    def __init__(
+        self, message: str, *, provider: str, retry_after: float | None = None
+    ) -> None:
+        super().__init__(message, provider=provider)
+        self.retry_after = retry_after
+
+
+def parse_retry_after_header(value: str | None) -> float | None:
+    """Parses the standard HTTP `Retry-After` header: either an integer
+    number of seconds, or an HTTP-date (RFC 7231 §7.1.3). Returns None if
+    absent or unparseable — callers should fall back to their own default
+    backoff in that case, never assume a value."""
+    if not value:
+        return None
+    value = value.strip()
+    try:
+        return max(float(value), 0.0)
+    except ValueError:
+        pass
+    try:
+        dt = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return max((dt - datetime.now(UTC)).total_seconds(), 0.0)
 
 
 class ProviderAuthError(ProviderError):

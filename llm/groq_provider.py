@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 
 import httpx
 from config.defaults import (
     DEFAULT_LLM_MAX_RETRIES,
+    DEFAULT_LLM_RATE_LIMIT_MAX_WAIT_SECONDS,
     DEFAULT_LLM_RETRY_BACKOFF_SECONDS,
     DEFAULT_LLM_TIMEOUT_SECONDS,
 )
@@ -23,6 +25,7 @@ from llm.base import (
     ProviderRateLimitError,
     ProviderResponseError,
     ProviderTimeoutError,
+    parse_retry_after_header,
 )
 
 logger = logging.getLogger("jarvis.llm.groq")
@@ -33,6 +36,44 @@ GROQ_API_BASE = "https://api.groq.com/openai/v1"
 # model family. Verified against the live /v1/models catalog — re-check
 # periodically as Groq's lineup changes.
 DEFAULT_MODEL = "openai/gpt-oss-120b"
+
+# Groq's own rate-limit headers use a compound duration format not covered by
+# the standard Retry-After header, e.g. "547ms", "1.065s", "8m38.4s". Live-
+# observed on every response (not just 429s) as x-ratelimit-reset-tokens /
+# x-ratelimit-reset-requests.
+_GROQ_DURATION_RE = re.compile(
+    r"^(?:(?P<hours>\d+)h)?(?:(?P<minutes>\d+)m)?"
+    r"(?:(?P<seconds>\d+(?:\.\d+)?)s)?(?:(?P<millis>\d+)ms)?$"
+)
+
+
+def _parse_groq_duration(value: str | None) -> float | None:
+    if not value:
+        return None
+    match = _GROQ_DURATION_RE.match(value.strip())
+    if not match or not any(match.groups()):
+        return None
+    hours = float(match.group("hours") or 0)
+    minutes = float(match.group("minutes") or 0)
+    seconds = float(match.group("seconds") or 0)
+    millis = float(match.group("millis") or 0)
+    return hours * 3600 + minutes * 60 + seconds + millis / 1000
+
+
+def _resolve_retry_after(resp: httpx.Response) -> float | None:
+    """Prefers the standard `Retry-After` header; falls back to Groq's own
+    reset-time headers (using whichever bucket — tokens or requests — is
+    closer to reset, i.e. whichever most likely caused this 429)."""
+    standard = parse_retry_after_header(resp.headers.get("retry-after"))
+    if standard is not None:
+        return standard
+
+    candidates = [
+        _parse_groq_duration(resp.headers.get(header))
+        for header in ("x-ratelimit-reset-tokens", "x-ratelimit-reset-requests")
+    ]
+    candidates = [c for c in candidates if c is not None]
+    return min(candidates) if candidates else None
 
 
 class GroqProvider:
@@ -76,7 +117,36 @@ class GroqProvider:
                         f"{self.base_url}/chat/completions", json=payload, headers=headers
                     )
                 return self._parse_response(resp)
-            except (ProviderRateLimitError, ProviderConnectionError, ProviderTimeoutError) as exc:
+            except ProviderRateLimitError as exc:
+                last_error = exc
+                if attempt >= self.max_retries:
+                    raise
+                if exc.retry_after is None:
+                    wait = DEFAULT_LLM_RETRY_BACKOFF_SECONDS * (attempt + 1)
+                elif exc.retry_after > DEFAULT_LLM_RATE_LIMIT_MAX_WAIT_SECONDS:
+                    # Groq itself says the window won't reset for a while —
+                    # waiting here would just block the user; let
+                    # LLMManager fall back to the next provider instead.
+                    logger.warning(
+                        "Groq rate limited, reported reset in %.1fs (exceeds %.0fs cap) — "
+                        "giving up on Groq for this turn: %s",
+                        exc.retry_after,
+                        DEFAULT_LLM_RATE_LIMIT_MAX_WAIT_SECONDS,
+                        exc,
+                    )
+                    raise
+                else:
+                    wait = exc.retry_after
+                logger.warning(
+                    "Groq rate limited (attempt %s/%s), waiting %.2fs (reported reset time): %s",
+                    attempt + 1,
+                    self.max_retries + 1,
+                    wait,
+                    exc,
+                )
+                await asyncio.sleep(wait)
+                continue
+            except (ProviderConnectionError, ProviderTimeoutError) as exc:
                 last_error = exc
                 if attempt < self.max_retries:
                     logger.warning(
@@ -107,7 +177,11 @@ class GroqProvider:
                 "Groq rejected the API key (check GROQ_API_KEY)", provider=self.name
             )
         if resp.status_code == 429:
-            raise ProviderRateLimitError("Groq rate limit exceeded", provider=self.name)
+            raise ProviderRateLimitError(
+                "Groq rate limit exceeded",
+                provider=self.name,
+                retry_after=_resolve_retry_after(resp),
+            )
         if resp.status_code >= 500:
             raise ProviderConnectionError(
                 f"Groq server error: {resp.status_code}", provider=self.name

@@ -123,3 +123,95 @@ def test_translate_does_not_mutate_original_messages():
     ]
     _translate_messages(original)
     assert original[0]["tool_calls"][0]["function"]["arguments"] == json.dumps({"a": 1})
+
+
+# --- Rate-limit-aware retry (same pattern as llm/groq_provider.py): waits
+# the provider's reported reset time rather than a blind fixed backoff.
+
+
+def test_parse_429_attaches_retry_after_from_standard_header():
+    resp = httpx.Response(
+        429,
+        headers={"retry-after": "3"},
+        request=httpx.Request("POST", "https://ollama.com/api/chat"),
+    )
+    with pytest.raises(ProviderRateLimitError) as excinfo:
+        _provider()._parse_response(resp)
+    assert excinfo.value.retry_after == 3.0
+
+
+def test_parse_429_no_header_leaves_retry_after_none():
+    resp = httpx.Response(
+        429, request=httpx.Request("POST", "https://ollama.com/api/chat")
+    )
+    with pytest.raises(ProviderRateLimitError) as excinfo:
+        _provider()._parse_response(resp)
+    assert excinfo.value.retry_after is None
+
+
+class _FakeAsyncClient:
+    def __init__(self, responses):
+        self._responses = responses  # shared queue across retry attempts, not copied
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def post(self, *a, **kw):
+        return self._responses.pop(0)
+
+
+def _rate_limited_response(retry_after: str) -> httpx.Response:
+    return httpx.Response(
+        429,
+        headers={"retry-after": retry_after},
+        request=httpx.Request("POST", "https://ollama.com/api/chat"),
+    )
+
+
+def _ok_response() -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={"model": "test-model", "message": {"content": "ok"}, "done": True},
+        request=httpx.Request("POST", "https://ollama.com/api/chat"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_generate_waits_reported_time_then_succeeds(monkeypatch):
+    sleeps = []
+
+    async def fake_sleep(s):
+        sleeps.append(s)
+
+    monkeypatch.setattr("llm.ollama_cloud_provider.asyncio.sleep", fake_sleep)
+
+    responses = [_rate_limited_response("2"), _ok_response()]
+    monkeypatch.setattr(
+        "llm.ollama_cloud_provider.httpx.AsyncClient", lambda **kw: _FakeAsyncClient(responses)
+    )
+
+    result = await _provider().generate([{"role": "user", "content": "hi"}])
+    assert result.content == "ok"
+    assert sleeps == [2.0]
+
+
+@pytest.mark.asyncio
+async def test_generate_gives_up_immediately_when_reset_exceeds_cap(monkeypatch):
+    sleeps = []
+
+    async def fake_sleep(s):
+        sleeps.append(s)
+
+    monkeypatch.setattr("llm.ollama_cloud_provider.asyncio.sleep", fake_sleep)
+
+    responses = [_rate_limited_response("600")]  # 10 minutes — far past the cap
+    monkeypatch.setattr(
+        "llm.ollama_cloud_provider.httpx.AsyncClient", lambda **kw: _FakeAsyncClient(responses)
+    )
+
+    with pytest.raises(ProviderRateLimitError):
+        await _provider().generate([{"role": "user", "content": "hi"}])
+    assert sleeps == []

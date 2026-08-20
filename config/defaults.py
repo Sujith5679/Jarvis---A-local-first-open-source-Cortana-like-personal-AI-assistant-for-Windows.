@@ -13,6 +13,12 @@ from __future__ import annotations
 DEFAULT_LLM_TIMEOUT_SECONDS = 30
 DEFAULT_LLM_MAX_RETRIES = 2
 DEFAULT_LLM_RETRY_BACKOFF_SECONDS = 1.5
+# On a 429, wait the provider's real reported reset time (never a guess) —
+# but only up to this cap. Groq's token-bucket resets are typically a few
+# seconds (observed 1-4s live), worth waiting for; its request-bucket reset
+# can be many minutes, not worth blocking the user for — past this cap we
+# give up on this provider immediately so LLMManager falls back faster.
+DEFAULT_LLM_RATE_LIMIT_MAX_WAIT_SECONDS = 8.0
 
 # --- Agent loop guardrails (spec.md §12) ---
 DEFAULT_MAX_TOOL_STEPS = 8

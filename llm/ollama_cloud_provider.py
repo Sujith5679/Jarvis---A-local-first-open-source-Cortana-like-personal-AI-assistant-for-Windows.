@@ -32,6 +32,7 @@ import logging
 import httpx
 from config.defaults import (
     DEFAULT_LLM_MAX_RETRIES,
+    DEFAULT_LLM_RATE_LIMIT_MAX_WAIT_SECONDS,
     DEFAULT_LLM_RETRY_BACKOFF_SECONDS,
     DEFAULT_LLM_TIMEOUT_SECONDS,
 )
@@ -43,6 +44,7 @@ from llm.base import (
     ProviderRateLimitError,
     ProviderResponseError,
     ProviderTimeoutError,
+    parse_retry_after_header,
 )
 
 logger = logging.getLogger("jarvis.llm.ollama_cloud")
@@ -118,7 +120,33 @@ class OllamaCloudProvider:
                         f"{self.base_url}/api/chat", json=payload, headers=headers
                     )
                 return self._parse_response(resp)
-            except (ProviderRateLimitError, ProviderConnectionError, ProviderTimeoutError) as exc:
+            except ProviderRateLimitError as exc:
+                last_error = exc
+                if attempt >= self.max_retries:
+                    raise
+                if exc.retry_after is None:
+                    wait = DEFAULT_LLM_RETRY_BACKOFF_SECONDS * (attempt + 1)
+                elif exc.retry_after > DEFAULT_LLM_RATE_LIMIT_MAX_WAIT_SECONDS:
+                    logger.warning(
+                        "Ollama Cloud rate limited, reported reset in %.1fs (exceeds %.0fs "
+                        "cap) — giving up on Ollama Cloud for this turn: %s",
+                        exc.retry_after,
+                        DEFAULT_LLM_RATE_LIMIT_MAX_WAIT_SECONDS,
+                        exc,
+                    )
+                    raise
+                else:
+                    wait = exc.retry_after
+                logger.warning(
+                    "Ollama Cloud rate limited (attempt %s/%s), waiting %.2fs: %s",
+                    attempt + 1,
+                    self.max_retries + 1,
+                    wait,
+                    exc,
+                )
+                await asyncio.sleep(wait)
+                continue
+            except (ProviderConnectionError, ProviderTimeoutError) as exc:
                 last_error = exc
                 if attempt < self.max_retries:
                     logger.warning(
@@ -149,7 +177,11 @@ class OllamaCloudProvider:
                 provider=self.name,
             )
         if resp.status_code == 429:
-            raise ProviderRateLimitError("Ollama Cloud rate limit exceeded", provider=self.name)
+            raise ProviderRateLimitError(
+                "Ollama Cloud rate limit exceeded",
+                provider=self.name,
+                retry_after=parse_retry_after_header(resp.headers.get("retry-after")),
+            )
         if resp.status_code >= 500:
             raise ProviderConnectionError(
                 f"Ollama Cloud server error: {resp.status_code}", provider=self.name
