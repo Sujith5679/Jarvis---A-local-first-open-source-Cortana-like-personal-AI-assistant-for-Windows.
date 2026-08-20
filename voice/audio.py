@@ -15,7 +15,11 @@ import logging
 
 import numpy as np
 import sounddevice as sd
-from config.defaults import DEFAULT_AUDIO_SAMPLE_RATE
+from config.defaults import (
+    DEFAULT_AUDIO_SAMPLE_RATE,
+    DEFAULT_MIN_SPEECH_DURATION_SECONDS,
+    DEFAULT_MIN_SPEECH_RMS,
+)
 
 logger = logging.getLogger("jarvis.voice.audio")
 
@@ -60,6 +64,26 @@ class AudioRecorder:
         if not self._frames:
             return np.zeros(0, dtype="float32")
         return np.concatenate(self._frames).flatten()
+
+
+def is_silent(
+    audio: np.ndarray,
+    sample_rate: int,
+    *,
+    rms_threshold: float = DEFAULT_MIN_SPEECH_RMS,
+    min_duration_seconds: float = DEFAULT_MIN_SPEECH_DURATION_SECONDS,
+) -> bool:
+    """True if `audio` is too short or too quiet to plausibly contain real
+    speech. Whisper-family models hallucinate confident stock phrases (most
+    infamously "Thank you.") when fed near-silent audio rather than
+    reporting they heard nothing — so callers should check this *before*
+    handing audio to any STT backend, not rely on the model to know."""
+    if audio.size == 0:
+        return True
+    if sample_rate <= 0 or audio.size / sample_rate < min_duration_seconds:
+        return True
+    rms = float(np.sqrt(np.mean(np.square(audio, dtype=np.float64))))
+    return rms < rms_threshold
 
 
 def play_audio(audio: np.ndarray, sample_rate: int) -> None:

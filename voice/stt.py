@@ -16,6 +16,13 @@ so voice never simply stops working as long as local is usable. Explicitly
 setting `JARVIS_STT_PROVIDERS=local` skips every cloud backend, for
 offline/privacy use (spec.md §33/§34).
 
+Before any backend is tried, `voice.audio.is_silent()` gates out audio
+that's too short or too quiet to plausibly contain speech. This matters
+because Whisper-family models (every backend here is Whisper-based, local
+or Groq-hosted alike) don't say "I heard nothing" on near-silent input —
+they confidently hallucinate a stock phrase, most infamously "Thank you.",
+learned from YouTube caption data full of silent clips captioned that way.
+
 NOTE: cloud backends are called via `module.transcribe(...)` — a fresh
 attribute lookup on the module object at call time, not a pre-bound
 function reference — specifically so tests can monkeypatch
@@ -34,6 +41,7 @@ import numpy as np
 from config.settings import Settings, get_settings
 
 from voice import stt_deepgram, stt_groq, stt_local
+from voice.audio import is_silent
 from voice.stt_local import TranscriptionError
 
 __all__ = ["TranscriptionError", "transcribe"]
@@ -50,7 +58,12 @@ _CLOUD_AVAILABILITY: dict[str, Callable[[Settings], bool]] = {
 async def transcribe(
     audio: np.ndarray, sample_rate: int, settings: Settings | None = None
 ) -> str:
-    if audio.size == 0:
+    if is_silent(audio, sample_rate):
+        # Too short/quiet to plausibly contain speech - deliberately never
+        # reaches any backend. Whisper-family models (local and Groq's
+        # hosted whisper-large-v3-turbo alike) hallucinate confident stock
+        # phrases like "Thank you." on near-silent audio instead of
+        # reporting they heard nothing; see voice/audio.py's is_silent().
         return ""
     settings = settings or get_settings()
 

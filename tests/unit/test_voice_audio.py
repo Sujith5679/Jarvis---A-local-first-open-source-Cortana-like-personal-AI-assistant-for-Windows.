@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from voice.audio import AudioRecorder, MicrophoneUnavailableError, play_audio
+from voice.audio import AudioRecorder, MicrophoneUnavailableError, is_silent, play_audio
 
 
 class _FakeStream:
@@ -68,3 +68,36 @@ def test_play_audio_plays_and_waits(monkeypatch):
 
     play_audio(np.ones(10, dtype="float32"), 16000)
     assert calls == ["play", "wait"]
+
+
+# --- is_silent(): gates near-silent/too-short audio out before it ever
+# reaches a Whisper-family backend, which would otherwise hallucinate a
+# confident stock phrase (e.g. "Thank you.") instead of reporting silence.
+
+
+def test_empty_audio_is_silent():
+    assert is_silent(np.zeros(0, dtype="float32"), 16000) is True
+
+
+def test_zero_sample_rate_is_silent():
+    assert is_silent(np.ones(8000, dtype="float32"), 0) is True
+
+
+def test_quiet_full_length_audio_is_silent():
+    quiet = np.full(8000, 0.001, dtype="float32")  # 0.5s @ 16kHz, near-zero amplitude
+    assert is_silent(quiet, 16000) is True
+
+
+def test_loud_but_too_short_audio_is_silent():
+    brief = np.full(50, 0.5, dtype="float32")  # loud, but only a few ms
+    assert is_silent(brief, 16000) is True
+
+
+def test_loud_full_length_audio_is_not_silent():
+    loud = np.full(8000, 0.5, dtype="float32")  # 0.5s @ 16kHz, well above the RMS floor
+    assert is_silent(loud, 16000) is False
+
+
+def test_custom_thresholds_are_respected():
+    quiet = np.full(8000, 0.001, dtype="float32")
+    assert is_silent(quiet, 16000, rms_threshold=0.0001) is False

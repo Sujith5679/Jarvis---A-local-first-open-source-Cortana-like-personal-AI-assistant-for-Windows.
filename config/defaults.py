@@ -71,3 +71,16 @@ DEFAULT_WHISPER_MODEL_SIZE = "base"
 DEFAULT_WHISPER_COMPUTE_TYPE = "int8"
 DEFAULT_AUDIO_SAMPLE_RATE = 16000  # what we record at; matches Whisper's native rate
 DEFAULT_PIPER_VOICE_NAME = "en_US-lessac-medium"
+
+# Whisper-family models (local and Groq's hosted whisper-large-v3-turbo alike)
+# were trained on huge amounts of YouTube caption data, where silent/near-
+# silent clips are very often captioned "Thank you." or "Thanks for
+# watching!". Fed near-silent audio, Whisper doesn't say "I don't know" - it
+# confidently hallucinates one of those stock phrases. A push-to-talk tap
+# that's too short, a quiet/wrong mic, or PortAudio's brief startup latency
+# eating the first moment of speech all produce audio that's technically
+# non-empty but has no real speech energy in it. Gate on that *before*
+# calling any STT backend (voice/stt.py) rather than trusting the model to
+# say so.
+DEFAULT_MIN_SPEECH_RMS = 0.01  # float32 [-1,1] samples; typical room noise sits well below this
+DEFAULT_MIN_SPEECH_DURATION_SECONDS = 0.3
