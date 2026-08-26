@@ -163,6 +163,95 @@ async def test_confirm_and_execute_denied_does_not_write_file(real_db, tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_launch_application_pauses_for_confirmation_without_launching(real_db, monkeypatch):
+    from tools import windows
+
+    def fail(*a, **kw):
+        raise AssertionError("Popen should not be called before confirmation")
+
+    monkeypatch.setattr(windows.subprocess, "Popen", fail)
+
+    responses = [
+        LLMResponse(
+            content="",
+            provider="scripted",
+            model="x",
+            tool_calls=[_tool_call("call_1", "launch_application", {"application": "notepad"})],
+        ),
+    ]
+    agent = Agent(llm_manager=LLMManager([_ScriptedProvider(responses)]), settings=real_db)
+    conv_id = conv_repo.create_conversation()
+
+    state = await agent.run_turn(conv_id, "open notepad")
+
+    assert state["requires_confirmation"] is True
+    assert state["confirmation_request"]["tool"] == "launch_application"
+
+
+@pytest.mark.asyncio
+async def test_confirm_and_execute_approved_launches_application(real_db, monkeypatch):
+    from tools import windows
+
+    calls = []
+    monkeypatch.setattr(windows.subprocess, "Popen", lambda args: calls.append(args))
+
+    agent = Agent(llm_manager=LLMManager([_ScriptedProvider([])]), settings=real_db)
+    conv_id = conv_repo.create_conversation()
+
+    state = await agent.confirm_and_execute(
+        conv_id, "launch_application", {"application": "notepad"}, approved=True
+    )
+
+    assert state["error"] is None
+    assert calls == [["notepad.exe"]]
+
+
+@pytest.mark.asyncio
+async def test_confirm_and_execute_denied_does_not_launch_application(real_db, monkeypatch):
+    from tools import windows
+
+    def fail(*a, **kw):
+        raise AssertionError("Popen should not be called when denied")
+
+    monkeypatch.setattr(windows.subprocess, "Popen", fail)
+
+    agent = Agent(llm_manager=LLMManager([_ScriptedProvider([])]), settings=real_db)
+    conv_id = conv_repo.create_conversation()
+
+    state = await agent.confirm_and_execute(
+        conv_id, "launch_application", {"application": "notepad"}, approved=False
+    )
+
+    assert "won't run" in state["response"].lower()
+
+
+@pytest.mark.asyncio
+async def test_lock_system_pauses_for_confirmation(real_db, monkeypatch):
+    from tools import windows
+
+    def fail():
+        raise AssertionError("LockWorkStation should not be called before confirmation")
+
+    monkeypatch.setattr(windows.ctypes.windll.user32, "LockWorkStation", fail, raising=False)
+
+    responses = [
+        LLMResponse(
+            content="",
+            provider="scripted",
+            model="x",
+            tool_calls=[_tool_call("call_1", "lock_system", {})],
+        ),
+    ]
+    agent = Agent(llm_manager=LLMManager([_ScriptedProvider(responses)]), settings=real_db)
+    conv_id = conv_repo.create_conversation()
+
+    state = await agent.run_turn(conv_id, "lock my computer")
+
+    assert state["requires_confirmation"] is True
+    assert state["confirmation_request"]["tool"] == "lock_system"
+
+
+@pytest.mark.asyncio
 async def test_low_risk_tool_does_not_require_confirmation(real_db):
     responses = [
         LLMResponse(

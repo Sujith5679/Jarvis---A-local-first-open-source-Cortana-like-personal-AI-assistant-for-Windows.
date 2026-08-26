@@ -15,6 +15,13 @@ runs its own callback thread), but transcription, the agent turn, and TTS
 playback all run on `VoiceTurnWorker` off the UI thread. Voice is entirely
 optional — `JARVIS_ENABLE_VOICE=false` hides the mic button, and any STT/TTS
 failure degrades to text-only rather than blocking the user (spec.md §32).
+
+Windows integration (spec.md §57 Phase 6): `run()` wires up the system tray
+icon (`ui/tray.py`) and global hotkey (`ui/hotkey.py`) around this window.
+Closing the window (the titlebar X) hides it to the tray rather than
+exiting — see `closeEvent`. Both are best-effort: if tray/hotkey
+registration fails for any reason, the window still runs as a normal
+top-level window (spec.md §32's graceful-degradation rule, same as voice).
 """
 
 from __future__ import annotations
@@ -184,13 +191,19 @@ class ChatWindow(QMainWindow):
         self.agent = build_agent(ctx.settings)
         self.conversation_id = conv_repo.create_conversation()
         self._worker: ChatTurnWorker | ConfirmTurnWorker | VoiceTurnWorker | None = None
+        # Set by ui.tray.TrayIcon/ui.hotkey.GlobalHotkey after construction
+        # (see run() below) — None means "no tray this run" (e.g. platform
+        # without one), in which case closeEvent must exit for real rather
+        # than hide to a tray icon that doesn't exist.
+        self.tray = None
+        self._really_quit = False
 
         self.setWindowTitle("JARVIS")
         self.resize(380, 540)
         self.setMinimumSize(300, 400)
 
         settings_menu = self.menuBar().addMenu("Settings")
-        manage_folders_action = settings_menu.addAction("Manage Folders...")
+        manage_folders_action = settings_menu.addAction("Settings...")
         manage_folders_action.triggered.connect(self._open_folders_dialog)
         usage_action = settings_menu.addAction("Usage && Costs...")
         usage_action.triggered.connect(self._open_usage_dialog)
@@ -217,6 +230,11 @@ class ChatWindow(QMainWindow):
         input_layout.addWidget(self.input_field, stretch=1)
 
         self._recorder: AudioRecorder | None = None
+        # Runtime on/off, independent of the JARVIS_ENABLE_VOICE startup
+        # switch below — this is what ui/tray.py's "Start/Stop voice" toggle
+        # flips. Only meaningful (and only exposed in the tray menu) when
+        # voice_available is True; there's no recorder to pause otherwise.
+        self.voice_enabled = ctx.settings.jarvis_enable_voice
         if ctx.settings.jarvis_enable_voice:
             self._recorder = AudioRecorder()
             self.mic_button = QPushButton("🎤", input_row)
@@ -242,8 +260,26 @@ class ChatWindow(QMainWindow):
         self.scheduler.start()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt override
+        # With a tray icon present, the titlebar X minimizes to tray instead
+        # of exiting — only ui.tray.TrayIcon.quit_app() (which sets
+        # _really_quit first) actually ends the process. Without a tray
+        # (e.g. registration failed), closing the only window must still
+        # exit normally rather than vanish with no way back.
+        if self.tray is not None and not self._really_quit:
+            event.ignore()
+            self.hide()
+            return
         self.scheduler.stop()
         super().closeEvent(event)
+
+    def show_and_focus(self) -> None:
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    @property
+    def voice_available(self) -> bool:
+        return self._recorder is not None
 
     def _open_folders_dialog(self) -> None:
         dialog = FoldersDialog(self)
@@ -305,6 +341,9 @@ class ChatWindow(QMainWindow):
 
     def _on_mic_pressed(self) -> None:
         assert self._recorder is not None
+        if not self.voice_enabled:
+            self.chat_log.append_status("Voice is currently off — enable it from the tray icon.")
+            return
         try:
             self._recorder.start()
         except MicrophoneUnavailableError as exc:
@@ -367,12 +406,41 @@ class ChatWindow(QMainWindow):
         self._worker.start()
 
 
-def run(ctx: BootstrapContext) -> int:
+def run(ctx: BootstrapContext, health_results: list | None = None) -> int:
     import sys
 
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QSystemTrayIcon
+
+    from ui.hotkey import GlobalHotkey
+    from ui.tray import TrayIcon
 
     app = QApplication.instance() or QApplication(sys.argv)
     window = ChatWindow(ctx)
-    window.show()
-    return app.exec()
+
+    if health_results:
+        from app.lifecycle import summarize_health_warnings
+
+        warning = summarize_health_warnings(health_results)
+        if warning:
+            window.chat_log.append_status(warning)
+
+    if QSystemTrayIcon.isSystemTrayAvailable():
+        tray = TrayIcon(window)
+        tray.show()
+        window.tray = tray
+        app.setQuitOnLastWindowClosed(False)
+    else:
+        logger.info("No system tray available on this platform — running without one.")
+
+    hotkey = GlobalHotkey(ctx.settings.jarvis_hotkey)
+    hotkey.bridge.triggered.connect(window.show_and_focus)
+    hotkey.register()
+
+    starts_hidden_in_tray = ctx.settings.jarvis_start_minimized and window.tray is not None
+    if not starts_hidden_in_tray:
+        window.show()
+
+    try:
+        return app.exec()
+    finally:
+        hotkey.unregister()

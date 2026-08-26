@@ -10,12 +10,12 @@ from app.lifecycle import run_health_checks, shutdown
 
 def main() -> int:
     ctx = bootstrap()
-    run_health_checks(ctx)
+    health_results = run_health_checks(ctx)
 
     from ui.chat_window import run as run_ui
 
     try:
-        exit_code = run_ui(ctx)
+        exit_code = run_ui(ctx, health_results=health_results)
     finally:
         shutdown(ctx)
     return exit_code

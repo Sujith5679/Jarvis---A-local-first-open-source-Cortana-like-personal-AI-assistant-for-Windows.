@@ -15,6 +15,8 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from config.defaults import DEFAULT_HOTKEY
+
 # Repository root = parent of the `config/` package directory.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -59,10 +61,21 @@ class Settings(BaseSettings):
     # --- Application ---
     jarvis_log_level: str = Field(default="INFO", alias="JARVIS_LOG_LEVEL")
     jarvis_data_dir: str | None = Field(default=None, alias="JARVIS_DATA_DIR")
-    jarvis_start_on_boot: bool = Field(default=True, alias="JARVIS_START_ON_BOOT")
+    # spec.md §27: "Do not force automatic startup" - defaults OFF. This
+    # field only seeds the "Start JARVIS with Windows" checkbox's initial
+    # display value the very first time Settings opens; ui/settings.py
+    # otherwise reads the real Task Scheduler state directly
+    # (app/windows_startup.py's is_startup_enabled()), and only
+    # enable_startup()/disable_startup() (an explicit checkbox toggle) ever
+    # changes it - nothing reads this field automatically at bootstrap.
+    jarvis_start_on_boot: bool = Field(default=False, alias="JARVIS_START_ON_BOOT")
     jarvis_start_minimized: bool = Field(default=True, alias="JARVIS_START_MINIMIZED")
     jarvis_enable_voice: bool = Field(default=True, alias="JARVIS_ENABLE_VOICE")
     jarvis_enable_wake_word: bool = Field(default=False, alias="JARVIS_ENABLE_WAKE_WORD")
+    # spec.md §26: configurable, defaults to Ctrl+Space. Parsed by ui/hotkey.py
+    # using the `keyboard` library's hotkey syntax (e.g. "ctrl+space",
+    # "ctrl+alt+j").
+    jarvis_hotkey: str = Field(default=DEFAULT_HOTKEY, alias="JARVIS_HOTKEY")
 
     # --- Voice ---
     # Ordered, comma-separated provider chain — same idea as LLMManager's

@@ -1,10 +1,12 @@
-"""Basic settings page (spec.md §3.1) — folder management for now.
+"""Basic settings page (spec.md §3.1) — folder management, plus a startup
+section added in Phase 6 (spec.md §27).
 
-The only setting exposed in this first pass is which folders JARVIS indexes
-(add/remove), since that's what makes Phase 2's search/read tools usable
-from the running app instead of only from a script. Startup/voice/hotkey
-preferences arrive in later phases without changing this dialog's shape —
-they'd get their own tab/section here.
+Voice/hotkey preferences remain `.env`-only for now (see README) — this
+dialog's own docstring history noted they'd get their own section "later,"
+and startup is the one Phase 6 actually promotes into the UI since it's the
+one preference the spec explicitly frames as a user-facing ON/OFF toggle
+(§27: "Start JARVIS with Windows: ON/OFF" — "Do not force automatic
+startup").
 """
 
 from __future__ import annotations
@@ -13,19 +15,24 @@ import logging
 
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QFileDialog,
     QHBoxLayout,
     QLabel,
     QListWidget,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
 )
+from rag import indexing_state
 from rag.embeddings import get_default_embedding_provider
 from rag.ingestion import IngestionPipeline, IngestionSummary
 from rag.vector_store import get_default_vector_store
 from storage.repositories import folders as folders_repo
 from tools import file_search
+
+from app import windows_startup
 
 logger = logging.getLogger("jarvis.ui.settings")
 
@@ -57,11 +64,15 @@ class IndexingWorker(QThread):
 class FoldersDialog(QDialog):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Manage Indexed Folders")
-        self.resize(480, 360)
+        self.setWindowTitle("Settings")
+        self.resize(480, 420)
         self._worker: IndexingWorker | None = None
 
         layout = QVBoxLayout(self)
+
+        folders_heading = QLabel("Indexed folders", self)
+        folders_heading.setStyleSheet("font-weight: 600;")
+        layout.addWidget(folders_heading)
 
         info = QLabel(
             "JARVIS only searches folders you explicitly add here — never your whole drive.",
@@ -91,11 +102,38 @@ class FoldersDialog(QDialog):
         button_row.addWidget(self.reindex_button)
         layout.addLayout(button_row)
 
+        startup_heading = QLabel("Startup", self)
+        startup_heading.setStyleSheet("font-weight: 600; margin-top: 10px;")
+        layout.addWidget(startup_heading)
+
+        self.startup_checkbox = QCheckBox("Start JARVIS with Windows", self)
+        try:
+            self.startup_checkbox.setChecked(windows_startup.is_startup_enabled())
+        except Exception:
+            logger.exception("Could not query Windows startup task state")
+            self.startup_checkbox.setEnabled(False)
+            self.startup_checkbox.setToolTip("Could not check Task Scheduler — see logs.")
+        self.startup_checkbox.toggled.connect(self._on_startup_toggled)
+        layout.addWidget(self.startup_checkbox)
+
         close_button = QPushButton("Close", self)
         close_button.clicked.connect(self.accept)
         layout.addWidget(close_button)
 
         self._refresh_list()
+
+    def _on_startup_toggled(self, checked: bool) -> None:
+        try:
+            if checked:
+                windows_startup.enable_startup()
+            else:
+                windows_startup.disable_startup()
+        except windows_startup.StartupTaskError as exc:
+            QMessageBox.warning(self, "Startup setting", f"Could not update startup task: {exc}")
+            # Revert the checkbox to reflect reality, without re-triggering this handler.
+            self.startup_checkbox.blockSignals(True)
+            self.startup_checkbox.setChecked(not checked)
+            self.startup_checkbox.blockSignals(False)
 
     def _refresh_list(self) -> None:
         self.folder_list.clear()
@@ -123,6 +161,11 @@ class FoldersDialog(QDialog):
 
     def _start_indexing(self) -> None:
         if self._worker is not None and self._worker.isRunning():
+            return
+        if indexing_state.is_paused():
+            self.status_label.setText(
+                "Indexing is paused — resume it from the tray icon to reindex."
+            )
             return
         self.status_label.setText("Indexing… this runs in the background.")
         self.add_button.setEnabled(False)

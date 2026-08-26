@@ -58,6 +58,7 @@ from tools import (
     tasks,
     web_reader,
     web_search,
+    windows,
 )
 from tools.registry import Tool, ToolRegistry
 
@@ -71,9 +72,7 @@ TOOL_RESULT_MAX_CHARS = 4000
 
 
 def build_default_tool_registry() -> ToolRegistry:
-    """Phase 2/3/4 tools. Later phases (windows) add their own
-    `register(registry)` calls here without touching the rest of this
-    module."""
+    """Phase 2/3/4/6 tools."""
     registry = ToolRegistry()
     file_search.register(registry)
     file_reader.register(registry)
@@ -84,6 +83,7 @@ def build_default_tool_registry() -> ToolRegistry:
     reminders.register(registry)
     web_search.register(registry)
     web_reader.register(registry)
+    windows.register(registry)
     return registry
 
 
@@ -160,6 +160,12 @@ def _summarize_confirmed_result(tool_name: str, arguments: dict, result: dict) -
     if tool_name == "write_file":
         verb = "Overwrote" if result.get("overwritten") else "Saved"
         return f"Done — {verb} {result.get('bytes_written', 0)} bytes to {result.get('path')}."
+    if tool_name == "launch_application":
+        return f"Done — launched {result.get('application')}."
+    if tool_name == "open_file":
+        return f"Done — opened {result.get('path')}."
+    if tool_name == "lock_system":
+        return "Done — locked the system."
     return f"Done — {tool_name} completed: {result}"
 
 

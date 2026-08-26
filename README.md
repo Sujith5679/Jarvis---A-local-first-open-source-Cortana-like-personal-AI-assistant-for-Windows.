@@ -117,6 +117,31 @@ Hold the 🎤 button in the chat window to talk, release to send. Set
 To use a different local voice, browse [available voices](https://github.com/rhasspy/piper/blob/master/VOICES.md)
 and set `JARVIS_PIPER_VOICE_PATH` in `.env` to the downloaded `.onnx` file's path.
 
+## Windows integration
+
+- **System tray**: JARVIS runs from the tray once started — Open JARVIS, Start/Stop
+  voice, Pause indexing, Settings, Reindex files, View logs, Quit. Closing the chat
+  window (the titlebar X) minimizes to tray rather than exiting; use tray → Quit to
+  actually close JARVIS. If `JARVIS_START_MINIMIZED=true` (the default), JARVIS
+  starts hidden in the tray rather than opening a window immediately.
+- **Global hotkey**: default `Ctrl+Space` opens/focuses the popup from anywhere.
+  Configurable via `JARVIS_HOTKEY` in `.env` (e.g. `ctrl+alt+j`), using the
+  [`keyboard`](https://github.com/boppreh/keyboard) library's combo syntax. If
+  registration fails for any reason (another app already owns the combo, a
+  restrictive permission context, ...) JARVIS logs a warning and keeps running
+  normally — the hotkey is a convenience, not a requirement.
+- **Start with Windows**: toggle "Start JARVIS with Windows" in Settings. This
+  registers/removes a per-user Windows Task Scheduler entry (`schtasks`) that runs
+  `start_jarvis.bat` at logon — off by default, and only ever changed by that
+  checkbox (never automatically, per spec.md §27: "Do not force automatic
+  startup").
+- **Application launching**: the `launch_application` tool can only run apps from a
+  fixed allowlist (notepad, calculator, paint, wordpad, explorer, snipping tool,
+  task manager, control panel — see `config/defaults.py`'s
+  `DEFAULT_APP_ALLOWLIST`) — never an arbitrary command. `open_file` can only open a
+  file already inside one of your indexed folders. `lock_system` locks the Windows
+  session. All three always require your explicit confirmation before running.
+
 ## Development
 
 ```bat
