@@ -210,6 +210,33 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         CREATE INDEX IF NOT EXISTS idx_llm_usage_timestamp ON llm_usage(timestamp);
         """,
     ),
+    (
+        4,
+        "voice_usage",
+        """
+        -- One row per STT/TTS call (voice/stt.py, voice/tts.py), the audio
+        -- counterpart to llm_usage. STT is billed by audio duration (seconds);
+        -- TTS is billed by input character count, not output audio duration -
+        -- so `quantity`'s meaning depends on `kind` (see `unit`). Local calls
+        -- (faster-whisper/Piper) are real, known $0.00, unlike Ollama Cloud's
+        -- *unknown* chat pricing in llm_usage - so estimated_cost_usd is only
+        -- ever NULL here for a cloud provider/model voice/pricing.py doesn't
+        -- recognize, never for "local".
+        CREATE TABLE IF NOT EXISTS voice_usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('stt', 'tts')),
+            provider TEXT NOT NULL,
+            model TEXT NOT NULL,
+            quantity REAL NOT NULL,
+            unit TEXT NOT NULL CHECK (unit IN ('audio_seconds', 'characters')),
+            estimated_cost_usd REAL
+        );
+        CREATE INDEX IF NOT EXISTS idx_voice_usage_session ON voice_usage(session_id);
+        CREATE INDEX IF NOT EXISTS idx_voice_usage_timestamp ON voice_usage(timestamp);
+        """,
+    ),
 ]
 
 

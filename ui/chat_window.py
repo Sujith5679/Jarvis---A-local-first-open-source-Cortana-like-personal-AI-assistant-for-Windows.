@@ -137,8 +137,11 @@ class VoiceTurnWorker(QThread):
         asyncio.run(self._run_async())
 
     async def _run_async(self) -> None:
+        session_id = str(self.conversation_id)
         try:
-            text = (await stt_transcribe(self.audio, self.sample_rate)).strip()
+            text = (
+                await stt_transcribe(self.audio, self.sample_rate, session_id=session_id)
+            ).strip()
         except TranscriptionError as exc:
             self.failed.emit(f"Could not understand that: {exc}")
             return
@@ -165,7 +168,7 @@ class VoiceTurnWorker(QThread):
         )
         if should_speak:
             try:
-                audio, sr = await tts_synthesize(state["response"])
+                audio, sr = await tts_synthesize(state["response"], session_id=session_id)
                 self.started_speaking.emit()
                 play_audio(audio, sr)
             except SynthesisError as exc:

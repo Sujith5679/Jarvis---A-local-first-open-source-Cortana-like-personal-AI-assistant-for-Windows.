@@ -22,6 +22,11 @@ function reference — specifically so tests can monkeypatch
 up. Binding `tts_groq.synthesize` into a dict at import time would capture
 the original function forever, silently defeating that monkeypatching (and
 sending real HTTP requests during "mocked" tests).
+
+Every successful call is logged via storage.repositories.voice_usage
+(input character count + estimated cost — TTS is billed by input text
+length, not output audio duration, for both cloud backends here) —
+skipped entirely if the caller passes no `session_id`.
 """
 
 from __future__ import annotations
@@ -30,7 +35,9 @@ import logging
 from collections.abc import Callable
 
 import numpy as np
+from config.defaults import DEFAULT_PIPER_VOICE_NAME
 from config.settings import Settings, get_settings
+from storage.repositories import voice_usage as voice_usage_repo
 
 from voice import tts_deepgram, tts_groq, tts_local
 from voice.tts_local import SynthesisError
@@ -46,13 +53,27 @@ _CLOUD_AVAILABILITY: dict[str, Callable[[Settings], bool]] = {
     "groq": Settings.has_groq,
     "deepgram": Settings.has_deepgram,
 }
+_MODEL_NAMES = {
+    "groq": tts_groq.DEFAULT_GROQ_TTS_MODEL,
+    "deepgram": tts_deepgram.DEFAULT_DEEPGRAM_TTS_MODEL,
+    "local": DEFAULT_PIPER_VOICE_NAME,
+}
 
 
-async def synthesize(text: str, settings: Settings | None = None) -> tuple[np.ndarray, int]:
+def _record(session_id: str | None, provider: str, char_count: int) -> None:
+    if session_id is None:
+        return
+    voice_usage_repo.record_tts_usage(session_id, provider, _MODEL_NAMES[provider], char_count)
+
+
+async def synthesize(
+    text: str, settings: Settings | None = None, session_id: str | None = None
+) -> tuple[np.ndarray, int]:
     text = (text or "").strip()
     settings = settings or get_settings()
     if not text:
         return np.zeros(0, dtype="float32"), DEFAULT_SAMPLE_RATE
+    char_count = len(text)
 
     tried_local = False
     last_exc: Exception | None = None
@@ -60,7 +81,9 @@ async def synthesize(text: str, settings: Settings | None = None) -> tuple[np.nd
         if name == "local":
             tried_local = True
             try:
-                return tts_local.synthesize(text, settings)
+                result = tts_local.synthesize(text, settings)
+                _record(session_id, "local", char_count)
+                return result
             except Exception as exc:
                 logger.warning("local TTS failed: %s", exc)
                 last_exc = exc
@@ -74,13 +97,17 @@ async def synthesize(text: str, settings: Settings | None = None) -> tuple[np.nd
         if not is_available(settings):
             continue
         try:
-            return await module.synthesize(text, settings)
+            result = await module.synthesize(text, settings)
+            _record(session_id, name, char_count)
+            return result
         except Exception as exc:
             logger.warning("%s TTS failed, trying next: %s", name, exc)
             last_exc = exc
 
     if not tried_local:
-        return tts_local.synthesize(text, settings)
+        result = tts_local.synthesize(text, settings)
+        _record(session_id, "local", char_count)
+        return result
     if last_exc is not None:
         raise last_exc
     return np.zeros(0, dtype="float32"), DEFAULT_SAMPLE_RATE

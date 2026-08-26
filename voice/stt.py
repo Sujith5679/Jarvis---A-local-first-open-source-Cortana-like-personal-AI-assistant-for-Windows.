@@ -23,6 +23,11 @@ or Groq-hosted alike) don't say "I heard nothing" on near-silent input —
 they confidently hallucinate a stock phrase, most infamously "Thank you.",
 learned from YouTube caption data full of silent clips captioned that way.
 
+Every successful call is logged via storage.repositories.voice_usage
+(audio duration + estimated cost, mirroring llm_usage's token tracking) —
+skipped entirely if the caller passes no `session_id`, so ad-hoc/test calls
+don't pollute the usage history.
+
 NOTE: cloud backends are called via `module.transcribe(...)` — a fresh
 attribute lookup on the module object at call time, not a pre-bound
 function reference — specifically so tests can monkeypatch
@@ -38,7 +43,9 @@ import logging
 from collections.abc import Callable
 
 import numpy as np
+from config.defaults import DEFAULT_WHISPER_MODEL_SIZE
 from config.settings import Settings, get_settings
+from storage.repositories import voice_usage as voice_usage_repo
 
 from voice import stt_deepgram, stt_groq, stt_local
 from voice.audio import is_silent
@@ -53,19 +60,35 @@ _CLOUD_AVAILABILITY: dict[str, Callable[[Settings], bool]] = {
     "groq": Settings.has_groq,
     "deepgram": Settings.has_deepgram,
 }
+_MODEL_NAMES = {
+    "groq": stt_groq.DEFAULT_GROQ_STT_MODEL,
+    "deepgram": stt_deepgram.DEFAULT_DEEPGRAM_STT_MODEL,
+    "local": DEFAULT_WHISPER_MODEL_SIZE,
+}
+
+
+def _record(session_id: str | None, provider: str, audio_seconds: float) -> None:
+    if session_id is None:
+        return
+    voice_usage_repo.record_stt_usage(session_id, provider, _MODEL_NAMES[provider], audio_seconds)
 
 
 async def transcribe(
-    audio: np.ndarray, sample_rate: int, settings: Settings | None = None
+    audio: np.ndarray,
+    sample_rate: int,
+    settings: Settings | None = None,
+    session_id: str | None = None,
 ) -> str:
     if is_silent(audio, sample_rate):
         # Too short/quiet to plausibly contain speech - deliberately never
-        # reaches any backend. Whisper-family models (local and Groq's
-        # hosted whisper-large-v3-turbo alike) hallucinate confident stock
-        # phrases like "Thank you." on near-silent audio instead of
-        # reporting they heard nothing; see voice/audio.py's is_silent().
+        # reaches any backend (and never logged as usage — no call was
+        # made). Whisper-family models (local and Groq's hosted
+        # whisper-large-v3-turbo alike) hallucinate confident stock phrases
+        # like "Thank you." on near-silent audio instead of reporting they
+        # heard nothing; see voice/audio.py's is_silent().
         return ""
     settings = settings or get_settings()
+    audio_seconds = audio.size / sample_rate if sample_rate else 0.0
 
     tried_local = False
     last_exc: Exception | None = None
@@ -73,7 +96,9 @@ async def transcribe(
         if name == "local":
             tried_local = True
             try:
-                return stt_local.transcribe(audio, sample_rate)
+                text = stt_local.transcribe(audio, sample_rate)
+                _record(session_id, "local", audio_seconds)
+                return text
             except Exception as exc:
                 logger.warning("local STT failed: %s", exc)
                 last_exc = exc
@@ -87,13 +112,17 @@ async def transcribe(
         if not is_available(settings):
             continue
         try:
-            return await module.transcribe(audio, sample_rate, settings)
+            text = await module.transcribe(audio, sample_rate, settings)
+            _record(session_id, name, audio_seconds)
+            return text
         except Exception as exc:
             logger.warning("%s STT failed, trying next: %s", name, exc)
             last_exc = exc
 
     if not tried_local:
-        return stt_local.transcribe(audio, sample_rate)
+        text = stt_local.transcribe(audio, sample_rate)
+        _record(session_id, "local", audio_seconds)
+        return text
     if last_exc is not None:
         raise last_exc
     return ""

@@ -165,3 +165,40 @@ async def test_too_short_audio_returns_empty_without_calling_any_backend(monkeyp
     settings = _settings(GROQ_API_KEY="k", DEEPGRAM_API_KEY="k")
     result = await stt.transcribe(brief_audio, 16000, settings)
     assert result == ""
+
+
+# --- Usage recording: only happens when the caller passes a session_id
+# (ad-hoc/test calls without one must not pollute voice_usage).
+
+
+@pytest.mark.asyncio
+async def test_records_usage_when_session_id_given(monkeypatch, real_db):
+    from storage.repositories import voice_usage as voice_usage_repo
+
+    async def fake_groq(audio, sample_rate, settings):
+        return "hello"
+
+    monkeypatch.setattr("voice.stt.stt_groq.transcribe", fake_groq)
+
+    settings = _settings(GROQ_API_KEY="k")
+    await stt.transcribe(_LOUD_AUDIO, 16000, settings, session_id="session-1")
+
+    totals = voice_usage_repo.get_session_totals("session-1")
+    assert totals["call_count"] == 1
+    assert totals["by_provider"][0]["provider"] == "groq"
+    assert totals["by_provider"][0]["unit"] == "audio_seconds"
+
+
+@pytest.mark.asyncio
+async def test_no_session_id_records_nothing(monkeypatch, real_db):
+    from storage.repositories import voice_usage as voice_usage_repo
+
+    async def fake_groq(audio, sample_rate, settings):
+        return "hello"
+
+    monkeypatch.setattr("voice.stt.stt_groq.transcribe", fake_groq)
+
+    settings = _settings(GROQ_API_KEY="k")
+    await stt.transcribe(_LOUD_AUDIO, 16000, settings)
+
+    assert voice_usage_repo.get_overall_totals()["call_count"] == 0
