@@ -25,6 +25,7 @@ from llm.base import (
     ProviderRateLimitError,
     ProviderResponseError,
     ProviderTimeoutError,
+    TokenUsage,
     parse_retry_after_header,
 )
 
@@ -203,8 +204,23 @@ class GroqProvider:
                 finish_reason=choice.get("finish_reason"),
                 tool_calls=message.get("tool_calls"),
                 raw=data,
+                usage=_extract_usage(data),
             )
         except (KeyError, IndexError, ValueError) as exc:
             raise ProviderResponseError(
                 f"Unexpected Groq response shape: {exc}", provider=self.name
             ) from exc
+
+
+def _extract_usage(data: dict) -> TokenUsage | None:
+    # Live-verified shape (Aug 2026): data["usage"] = {"prompt_tokens": ...,
+    # "completion_tokens": ..., "total_tokens": ..., plus Groq-specific
+    # timing fields we don't need here}.
+    usage = data.get("usage")
+    if not usage:
+        return None
+    return TokenUsage(
+        prompt_tokens=usage.get("prompt_tokens", 0),
+        completion_tokens=usage.get("completion_tokens", 0),
+        total_tokens=usage.get("total_tokens", 0),
+    )

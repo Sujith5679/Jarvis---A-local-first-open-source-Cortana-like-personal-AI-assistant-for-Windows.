@@ -7,7 +7,7 @@ from storage.migrations import MIGRATIONS, apply_migrations, current_version
 EXPECTED_TABLES = {
     "users", "settings", "conversations", "messages", "indexed_folders",
     "documents", "document_chunks", "notes", "tasks", "reminders",
-    "memories", "events", "audit_log", "schema_migrations",
+    "memories", "events", "audit_log", "llm_usage", "schema_migrations",
 }
 
 

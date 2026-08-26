@@ -48,6 +48,7 @@ from voice.tts import synthesize as tts_synthesize
 from ui.messages import ChatLog
 from ui.notifications import NotificationService
 from ui.settings import FoldersDialog
+from ui.usage_dialog import UsageDialog
 
 logger = logging.getLogger("jarvis.ui.chat_window")
 
@@ -188,6 +189,8 @@ class ChatWindow(QMainWindow):
         settings_menu = self.menuBar().addMenu("Settings")
         manage_folders_action = settings_menu.addAction("Manage Folders...")
         manage_folders_action.triggered.connect(self._open_folders_dialog)
+        usage_action = settings_menu.addAction("Usage && Costs...")
+        usage_action.triggered.connect(self._open_usage_dialog)
 
         central = QWidget(self)
         layout = QVBoxLayout(central)
@@ -241,6 +244,10 @@ class ChatWindow(QMainWindow):
 
     def _open_folders_dialog(self) -> None:
         dialog = FoldersDialog(self)
+        dialog.exec()
+
+    def _open_usage_dialog(self) -> None:
+        dialog = UsageDialog(str(self.conversation_id), self)
         dialog.exec()
 
     def _on_reminder_fired(self, reminder: dict) -> None:

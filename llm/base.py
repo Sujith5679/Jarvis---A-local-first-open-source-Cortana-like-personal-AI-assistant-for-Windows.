@@ -16,6 +16,19 @@ from typing import Protocol, runtime_checkable
 
 
 @dataclass
+class TokenUsage:
+    """Normalized token counts, regardless of each provider's own field names
+    (Groq: usage.prompt_tokens/completion_tokens; Ollama Cloud:
+    prompt_eval_count/eval_count — both live-verified against the real APIs).
+    Used by storage/repositories/usage.py to track spend — see
+    llm/pricing.py for turning this into a dollar cost."""
+
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
+@dataclass
 class LLMResponse:
     content: str
     provider: str
@@ -23,6 +36,7 @@ class LLMResponse:
     finish_reason: str | None = None
     tool_calls: list[dict] | None = None
     raw: dict | None = None
+    usage: TokenUsage | None = None
 
 
 @runtime_checkable

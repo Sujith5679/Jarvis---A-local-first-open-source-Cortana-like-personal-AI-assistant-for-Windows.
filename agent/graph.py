@@ -47,6 +47,7 @@ from llm.manager import LLMManager
 from security.audit import log_event
 from security.permissions import check_permission
 from storage.repositories import conversations as conv_repo
+from storage.repositories import usage as usage_repo
 from tools import (
     file_listing,
     file_reader,
@@ -227,6 +228,11 @@ class Agent:
             except AllProvidersFailedError as exc:
                 state["error"] = str(exc)
                 return
+
+            if response.usage is not None:
+                usage_repo.record_usage(
+                    state["conversation_id"], response.provider, response.model, response.usage
+                )
 
             tool_calls = _normalize_tool_calls(response.tool_calls)
             if not tool_calls:

@@ -51,6 +51,40 @@ def test_parse_malformed_body_raises_response_error():
         _provider()._parse_response(resp)
 
 
+# --- Token usage extraction: live-verified shape (Aug 2026) has no "usage"
+# object like Groq/OpenAI - top-level prompt_eval_count/eval_count instead,
+# and no total_tokens field (summed in _extract_usage).
+
+
+def test_parse_response_extracts_usage():
+    resp = httpx.Response(
+        200,
+        json={
+            "model": "test-model",
+            "message": {"content": "hi"},
+            "done": True,
+            "prompt_eval_count": 73,
+            "eval_count": 79,
+        },
+        request=httpx.Request("POST", "https://ollama.com/api/chat"),
+    )
+    result = _provider()._parse_response(resp)
+    assert result.usage is not None
+    assert result.usage.prompt_tokens == 73
+    assert result.usage.completion_tokens == 79
+    assert result.usage.total_tokens == 152
+
+
+def test_parse_response_without_eval_counts_leaves_usage_none():
+    resp = httpx.Response(
+        200,
+        json={"model": "test-model", "message": {"content": "hi"}, "done": True},
+        request=httpx.Request("POST", "https://ollama.com/api/chat"),
+    )
+    result = _provider()._parse_response(resp)
+    assert result.usage is None
+
+
 # --- _translate_messages: real bug found live-testing Groq -> Ollama Cloud
 # mid-turn fallback. Ollama Cloud's /api/chat rejects (HTTP 400) a
 # tool_calls[].function.arguments that's a JSON-encoded string (Groq/OpenAI's

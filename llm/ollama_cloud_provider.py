@@ -44,6 +44,7 @@ from llm.base import (
     ProviderRateLimitError,
     ProviderResponseError,
     ProviderTimeoutError,
+    TokenUsage,
     parse_retry_after_header,
 )
 
@@ -202,8 +203,26 @@ class OllamaCloudProvider:
                 finish_reason="stop" if data.get("done") else None,
                 tool_calls=message.get("tool_calls"),
                 raw=data,
+                usage=_extract_usage(data),
             )
         except (KeyError, ValueError) as exc:
             raise ProviderResponseError(
                 f"Unexpected Ollama Cloud response shape: {exc}", provider=self.name
             ) from exc
+
+
+def _extract_usage(data: dict) -> TokenUsage | None:
+    # Live-verified shape (Aug 2026): no "usage" object like Groq/OpenAI —
+    # token counts are top-level prompt_eval_count/eval_count, and there's
+    # no total_tokens field, so it's summed here.
+    prompt_tokens = data.get("prompt_eval_count")
+    completion_tokens = data.get("eval_count")
+    if prompt_tokens is None and completion_tokens is None:
+        return None
+    prompt_tokens = prompt_tokens or 0
+    completion_tokens = completion_tokens or 0
+    return TokenUsage(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=prompt_tokens + completion_tokens,
+    )

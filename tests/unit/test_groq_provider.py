@@ -54,6 +54,41 @@ def test_parse_malformed_body_raises_response_error():
         _provider()._parse_response(resp)
 
 
+# --- Token usage extraction: live-verified shape (Aug 2026) is
+# data["usage"] = {"prompt_tokens": ..., "completion_tokens": ...,
+# "total_tokens": ..., plus Groq-specific timing fields}.
+
+
+def test_parse_response_extracts_usage():
+    resp = httpx.Response(
+        200,
+        json={
+            "model": "test-model",
+            "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 77, "completion_tokens": 56, "total_tokens": 133},
+        },
+        request=httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions"),
+    )
+    result = _provider()._parse_response(resp)
+    assert result.usage is not None
+    assert result.usage.prompt_tokens == 77
+    assert result.usage.completion_tokens == 56
+    assert result.usage.total_tokens == 133
+
+
+def test_parse_response_without_usage_field_leaves_usage_none():
+    resp = httpx.Response(
+        200,
+        json={
+            "model": "test-model",
+            "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+        },
+        request=httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions"),
+    )
+    result = _provider()._parse_response(resp)
+    assert result.usage is None
+
+
 # --- Rate-limit-aware retry: live-observed Groq duration format ("547ms",
 # "1.065s", "8m38.4s", ...) on x-ratelimit-reset-tokens/-requests, real bug
 # fix motivated by hitting genuine rate limits during heavy live testing.

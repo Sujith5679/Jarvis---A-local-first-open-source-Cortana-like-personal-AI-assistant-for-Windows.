@@ -2,21 +2,25 @@ from __future__ import annotations
 
 import pytest
 from agent.graph import Agent
-from llm.base import LLMResponse
+from llm.base import LLMResponse, TokenUsage
 from llm.manager import LLMManager
 from storage.repositories import conversations as conv_repo
+from storage.repositories import usage as usage_repo
 
 
 class _StubProvider:
     name = "stub"
 
-    def __init__(self, reply: str = "Hello! How can I help?"):
+    def __init__(self, reply: str = "Hello! How can I help?", usage: TokenUsage | None = None):
         self.reply = reply
+        self.usage = usage
         self.received_messages: list[dict] | None = None
 
     async def generate(self, messages, tools=None):
         self.received_messages = messages
-        return LLMResponse(content=self.reply, provider=self.name, model="stub-model")
+        return LLMResponse(
+            content=self.reply, provider=self.name, model="stub-model", usage=self.usage
+        )
 
 
 class _AlwaysFailingProvider:
@@ -75,3 +79,33 @@ async def test_run_turn_surfaces_provider_failure_without_crashing(real_db):
     messages = conv_repo.get_messages(conv_id)
     assert len(messages) == 1
     assert messages[0]["role"] == "user"
+
+
+@pytest.mark.asyncio
+async def test_run_turn_records_llm_usage_when_provider_reports_it(real_db):
+    stub = _StubProvider(
+        reply="42 is the answer.",
+        usage=TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+    )
+    agent = Agent(llm_manager=LLMManager([stub]), settings=real_db)
+    conv_id = conv_repo.create_conversation()
+
+    await agent.run_turn(conv_id, "What is the answer?")
+
+    totals = usage_repo.get_session_totals(str(conv_id))
+    assert totals["call_count"] == 1
+    assert totals["prompt_tokens"] == 10
+    assert totals["completion_tokens"] == 5
+    assert totals["total_tokens"] == 15
+
+
+@pytest.mark.asyncio
+async def test_run_turn_skips_usage_recording_when_provider_reports_none(real_db):
+    stub = _StubProvider(reply="no usage here", usage=None)
+    agent = Agent(llm_manager=LLMManager([stub]), settings=real_db)
+    conv_id = conv_repo.create_conversation()
+
+    await agent.run_turn(conv_id, "hello")
+
+    totals = usage_repo.get_session_totals(str(conv_id))
+    assert totals["call_count"] == 0

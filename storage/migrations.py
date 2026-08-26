@@ -184,6 +184,32 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         END;
         """,
     ),
+    (
+        3,
+        "llm_usage",
+        """
+        -- One row per LLM call (llm/manager.py), for the "Usage & Costs"
+        -- dialog (ui/usage_dialog.py). session_id matches audit_log's
+        -- convention: the conversation id, since each app launch creates a
+        -- new conversation. estimated_cost_usd is NULL whenever the
+        -- provider/model has no known per-token price (llm/pricing.py) -
+        -- e.g. Ollama Cloud's flat GPU-time subscription - never a
+        -- fabricated 0 or guessed figure.
+        CREATE TABLE IF NOT EXISTS llm_usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            model TEXT NOT NULL,
+            prompt_tokens INTEGER NOT NULL DEFAULT 0,
+            completion_tokens INTEGER NOT NULL DEFAULT 0,
+            total_tokens INTEGER NOT NULL DEFAULT 0,
+            estimated_cost_usd REAL
+        );
+        CREATE INDEX IF NOT EXISTS idx_llm_usage_session ON llm_usage(session_id);
+        CREATE INDEX IF NOT EXISTS idx_llm_usage_timestamp ON llm_usage(timestamp);
+        """,
+    ),
 ]
 
 
