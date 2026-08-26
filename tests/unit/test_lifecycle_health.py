@@ -4,13 +4,17 @@ import logging
 
 import httpx
 from app.bootstrap import BootstrapContext
+from web.searxng_process import SearXNGProcessManager
 
 from app import lifecycle
 
 
 def _ctx(settings) -> BootstrapContext:
     return BootstrapContext(
-        settings=settings, logger=logging.getLogger("test"), migrations_applied=[]
+        settings=settings,
+        logger=logging.getLogger("test"),
+        migrations_applied=[],
+        searxng=SearXNGProcessManager(settings),
     )
 
 

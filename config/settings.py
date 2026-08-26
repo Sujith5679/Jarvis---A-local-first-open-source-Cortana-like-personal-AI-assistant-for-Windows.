@@ -52,6 +52,14 @@ class Settings(BaseSettings):
 
     # --- Web ---
     searxng_url: str = Field(default="http://localhost:8080", alias="SEARXNG_URL")
+    # Optional: let JARVIS manage its own local SearXNG process (see
+    # web/searxng_process.py) rather than requiring it to be started
+    # separately every time (README's "Web search" section). Off by default
+    # since it assumes SearXNG is checked out at searxng_dir with its own
+    # venv, exactly as the README's manual setup instructions produce -
+    # never assumed present.
+    searxng_autostart: bool = Field(default=False, alias="SEARXNG_AUTOSTART")
+    searxng_dir: str | None = Field(default=None, alias="SEARXNG_DIR")
 
     # --- User ---
     jarvis_user_name: str | None = Field(default=None, alias="JARVIS_USER_NAME")

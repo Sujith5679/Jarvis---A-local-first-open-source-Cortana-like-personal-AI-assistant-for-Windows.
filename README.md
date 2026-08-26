@@ -80,6 +80,23 @@ needs to be running whenever you want `web_search`/`open_webpage` to work — wi
 it, JARVIS degrades gracefully (local features keep working, web search reports
 itself as temporarily unavailable) rather than failing.
 
+### Auto-starting SearXNG with JARVIS
+
+Instead of starting it yourself every time, let JARVIS manage it: set
+`SEARXNG_AUTOSTART=true` and `SEARXNG_DIR` (the path to the checkout above, e.g.
+`C:\Users\you\searxng`) in `.env`. On startup, JARVIS checks whether `SEARXNG_URL`
+is already reachable (so it never spawns a redundant second instance if you — or a
+previous JARVIS session — already have one running) and, if not, launches
+`<SEARXNG_DIR>\.venv\Scripts\python.exe -m searx.webapp` itself, stopping it again
+on exit. If `SEARXNG_DIR` isn't set or doesn't look like a real checkout, this is
+silently skipped — the manual `web/searxng_process.py` requires no configuration
+changes elsewhere and won't break anything if you'd rather keep starting it
+yourself.
+
+Note the startup health check may still briefly report "web_search: offline"
+right after launch — SearXNG's own Flask server takes a few seconds to finish
+booting, and JARVIS doesn't block its own startup waiting for it.
+
 ## Voice (push-to-talk)
 
 Three backends for both speech-to-text and text-to-speech, tried in order (an

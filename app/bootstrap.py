@@ -15,6 +15,7 @@ from config.settings import Settings, get_settings
 from security.audit import log_event
 from storage.database import connect
 from storage.migrations import apply_migrations
+from web.searxng_process import SearXNGProcessManager
 
 _LOG_FORMAT = "%(asctime)s %(levelname)-8s %(name)s: %(message)s"
 
@@ -45,6 +46,7 @@ class BootstrapContext:
     settings: Settings
     logger: logging.Logger
     migrations_applied: list[int]
+    searxng: SearXNGProcessManager
 
 
 def bootstrap() -> BootstrapContext:
@@ -57,6 +59,12 @@ def bootstrap() -> BootstrapContext:
     settings = get_settings()
     logger = _configure_logging(settings)
     logger.info("JARVIS bootstrap starting (data_dir=%s)", settings.data_dir)
+
+    # Started early (before DB/migrations) so it has the most possible head
+    # start on its own boot time before anything actually needs it — a
+    # no-op unless SEARXNG_AUTOSTART is set (see web/searxng_process.py).
+    searxng = SearXNGProcessManager(settings)
+    searxng.start()
 
     conn = connect()
     try:
@@ -75,4 +83,6 @@ def bootstrap() -> BootstrapContext:
     )
 
     logger.info("JARVIS bootstrap complete.")
-    return BootstrapContext(settings=settings, logger=logger, migrations_applied=applied)
+    return BootstrapContext(
+        settings=settings, logger=logger, migrations_applied=applied, searxng=searxng
+    )

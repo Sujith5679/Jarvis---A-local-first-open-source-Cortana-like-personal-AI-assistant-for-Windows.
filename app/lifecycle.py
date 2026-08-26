@@ -180,4 +180,5 @@ def summarize_health_warnings(results: list[HealthCheckResult]) -> str | None:
 def shutdown(ctx: BootstrapContext) -> None:
     """Graceful shutdown hook. Called on normal app exit."""
     logger.info("JARVIS shutting down.")
+    ctx.searxng.stop()
     log_event("shutdown", status="success")
