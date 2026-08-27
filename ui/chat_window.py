@@ -88,6 +88,35 @@ class ChatTurnWorker(QThread):
             self.failed.emit(str(exc))
 
 
+class MCPDiscoveryWorker(QThread):
+    """Connects to every configured+enabled MCP server (integrations/mcp/)
+    and registers their tools into the agent's tool registry, off the UI
+    thread — server startup (especially npx-spawned ones) can take a few
+    seconds and must never block the UI (spec.md §42), same reasoning as
+    IndexingWorker (ui/settings.py). Tools become available for the *next*
+    agent turn once this finishes — a turn already in flight when discovery
+    completes doesn't retroactively gain them."""
+
+    finished_ok = Signal(list)  # list[MCPConnection]
+    failed = Signal(str)
+
+    def __init__(self, registry) -> None:
+        super().__init__()
+        self.registry = registry
+
+    def run(self) -> None:
+        from integrations.mcp.bridge import discover_and_register
+
+        try:
+            connections = asyncio.run(discover_and_register(self.registry))
+            self.finished_ok.emit(connections)
+        except Exception as exc:  # pragma: no cover - defensive; discover_and_register
+            # itself never raises (per-server failures are caught internally) - this only
+            # catches a genuinely unexpected bug, so MCP can never take the app down.
+            logger.exception("MCP discovery failed unexpectedly")
+            self.failed.emit(str(exc))
+
+
 class ConfirmTurnWorker(QThread):
     """Runs Agent.confirm_and_execute() off the UI thread."""
 
@@ -196,6 +225,14 @@ class ChatWindow(QMainWindow):
         self.agent = build_agent(ctx.settings)
         self.conversation_id = conv_repo.create_conversation()
         self._worker: ChatTurnWorker | ConfirmTurnWorker | VoiceTurnWorker | None = None
+        self._mcp_connections: list = []
+        self._mcp_worker = MCPDiscoveryWorker(self.agent.tool_registry)
+        self._mcp_worker.finished_ok.connect(self._on_mcp_ready)
+        self._mcp_worker.failed.connect(
+            lambda msg: logger.warning("MCP discovery failed: %s", msg)
+        )
+        self._mcp_worker.finished.connect(self._mcp_worker.deleteLater)
+        self._mcp_worker.start()
         # Set by run() below after construction, if a tray is available on
         # this platform — purely a convenience menu (pause indexing,
         # voice toggle, reindex, view logs) while the app happens to be
@@ -270,7 +307,16 @@ class ChatWindow(QMainWindow):
         # actually in use. Ctrl+Space (or the supervisor's own tray icon)
         # launches a fresh instance the next time it's needed.
         self.scheduler.stop()
+        if self._mcp_connections:
+            from integrations.mcp.bridge import close_all
+
+            asyncio.run(close_all(self._mcp_connections))
         super().closeEvent(event)
+
+    def _on_mcp_ready(self, connections: list) -> None:
+        self._mcp_connections = connections
+        if connections:
+            self.chat_log.append_status(f"🔌 Connected {len(connections)} MCP server(s).")
 
     def show_and_focus(self) -> None:
         self.showNormal()

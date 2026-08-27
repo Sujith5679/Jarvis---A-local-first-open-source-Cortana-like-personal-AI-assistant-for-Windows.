@@ -252,6 +252,69 @@ async def test_lock_system_pauses_for_confirmation(real_db, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_mcp_tool_pauses_for_confirmation_without_executing(real_db):
+    """MCP-sourced tools (integrations/mcp/) go through the exact same
+    agent confirmation flow as built-in HIGH-risk tools — proven here with
+    a real in-process MCP server (not mocked), same as
+    tests/unit/test_mcp_bridge.py."""
+    from integrations.mcp.bridge import MCPConnection, discover_and_register
+    from integrations.mcp.config import MCPServerConfig
+    from mcp.server.mcpserver import MCPServer
+    from tools.registry import ToolRegistry
+
+    from mcp import Client
+
+    calls = []
+    server = MCPServer("test-server")
+
+    @server.tool()
+    def send_message(text: str) -> str:
+        calls.append(text)
+        return "sent"
+
+    registry = ToolRegistry()
+    config = MCPServerConfig(name="chat", command="unused", args=[], env={})
+    connections = await discover_and_register(
+        registry,
+        configs=[config],
+        connection_factory=lambda cfg: MCPConnection(
+            cfg, client_factory=lambda: Client(server)
+        ),
+    )
+
+    responses = [
+        LLMResponse(
+            content="",
+            provider="scripted",
+            model="x",
+            tool_calls=[
+                _tool_call("call_1", "mcp__chat__send_message", {"text": "hello"})
+            ],
+        ),
+    ]
+    agent = Agent(
+        llm_manager=LLMManager([_ScriptedProvider(responses)]),
+        settings=real_db,
+        tool_registry=registry,
+    )
+    conv_id = conv_repo.create_conversation()
+
+    state = await agent.run_turn(conv_id, "send hello")
+
+    assert state["requires_confirmation"] is True
+    assert state["confirmation_request"]["tool"] == "mcp__chat__send_message"
+    assert calls == []  # not actually executed yet
+
+    confirmed = await agent.confirm_and_execute(
+        conv_id, "mcp__chat__send_message", {"text": "hello"}, approved=True
+    )
+    assert confirmed["error"] is None
+    assert calls == ["hello"]
+
+    await connections[0].close()
+
+
+@pytest.mark.asyncio
 async def test_low_risk_tool_does_not_require_confirmation(real_db):
     responses = [
         LLMResponse(

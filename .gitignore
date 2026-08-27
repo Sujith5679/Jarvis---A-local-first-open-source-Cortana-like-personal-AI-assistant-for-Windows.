@@ -1,6 +1,8 @@
 .env
 .env.*
 !.env.example
+mcp_servers.json
+!mcp_servers.example.json
 data/
 *.log
 .venv/

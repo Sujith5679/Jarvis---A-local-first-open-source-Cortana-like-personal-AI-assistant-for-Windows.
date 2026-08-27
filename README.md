@@ -172,6 +172,44 @@ working even when JARVIS itself isn't open.
   file already inside one of your indexed folders. `lock_system` locks the Windows
   session. All three always require your explicit confirmation before running.
 
+## MCP servers
+
+JARVIS can use tools from any [MCP](https://modelcontextprotocol.io) server you
+configure — the same protocol Claude Desktop/Claude Code use, so a config you
+already have for those can mostly be reused here.
+
+Copy `mcp_servers.example.json` to `mcp_servers.json` (gitignored, same as `.env` —
+a server's `env` block often carries a real API token) and list your servers:
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\Users\\you\\Documents"],
+      "env": {},
+      "enabled": true
+    }
+  }
+}
+```
+
+JARVIS connects to every enabled server in the background on startup (never
+blocking the UI — the first connection to a fresh `npx`-based server can take a
+while since `npx` has to download it first; it's fast on every launch after that)
+and makes its tools available to the agent, namespaced `mcp__<server>__<tool>` so
+they can never collide with a built-in tool name.
+
+**Every MCP tool always requires your explicit confirmation before it runs, no
+matter what it claims to do.** Unlike JARVIS's own built-in tools (each reviewed and
+assigned a risk level by hand), an MCP server is external, user-configured code —
+JARVIS has no way to verify what it actually does, so it's never trusted by
+default. The confirmation prompt always shows which server a proposed action came
+from.
+
+Local (stdio) servers only for now — filesystem, git, sqlite, and similar. Remote/
+HTTP MCP servers aren't supported yet.
+
 ## Development
 
 ```bat
