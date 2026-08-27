@@ -9,6 +9,16 @@ skips auto-start and logs why — `web/search.py`'s existing "SearXNG
 offline" handling covers the rest, same graceful-degradation rule as every
 other optional subsystem (spec.md §32).
 
+Deliberately lazy: nothing starts SearXNG just because JARVIS launched —
+`ensure_started()` is the one entry point that actually triggers it, called
+from `tools/web_search.py` right before the first real search of a session
+(not from `app/bootstrap.py`, which only constructs the manager, and not
+from `app/lifecycle.py`'s startup health check, which only *observes*
+reachability). So a session that never searches the web never spawns
+SearXNG at all; once triggered, it's left running for the rest of the
+session (repeat searches skip straight to the request — no repeated ~2s
+boot delay) and stopped when JARVIS exits.
+
 Before spawning anything, `start()` checks whether `SEARXNG_URL` is already
 reachable (e.g. the user started it manually, or it's already running from
 a previous JARVIS session that didn't exit cleanly) and skips spawning if
@@ -18,13 +28,19 @@ so — both to avoid a redundant process fighting over the same port, and so
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import subprocess
+import time
+from functools import lru_cache
 from pathlib import Path
 
 import httpx
-from config.defaults import DEFAULT_HEALTH_CHECK_WEB_TIMEOUT_SECONDS
-from config.settings import Settings
+from config.defaults import (
+    DEFAULT_HEALTH_CHECK_WEB_TIMEOUT_SECONDS,
+    DEFAULT_SEARXNG_STARTUP_WAIT_SECONDS,
+)
+from config.settings import Settings, get_settings
 
 logger = logging.getLogger("jarvis.web.searxng_process")
 
@@ -106,3 +122,45 @@ class SearXNGProcessManager:
     @property
     def is_running(self) -> bool:
         return self._process is not None and self._process.poll() is None
+
+    async def ensure_started(
+        self, *, wait_timeout: float = DEFAULT_SEARXNG_STARTUP_WAIT_SECONDS
+    ) -> None:
+        """Called from `tools/web_search.py` right before an actual search —
+        the one place that turns "auto-start enabled" into a running
+        process. No-op if autostart is disabled, already running, or
+        already reachable (the common case after the first call in a
+        session — near-zero overhead). Never raises: if SearXNG doesn't
+        come up within `wait_timeout`, this just returns and the caller's
+        own request fails with the normal SearXNGUnavailableError, exactly
+        as it would have before this feature existed."""
+        if not self.settings.searxng_autostart:
+            return
+        if self.is_running or self._already_reachable():
+            return
+
+        self.start()
+        if not self.is_running:
+            return  # start() itself skipped or failed (already logged why)
+
+        deadline = time.monotonic() + wait_timeout
+        while time.monotonic() < deadline:
+            if self._already_reachable():
+                return
+            await asyncio.sleep(0.3)
+        logger.warning(
+            "SearXNG did not become reachable within %.0fs of starting.", wait_timeout
+        )
+
+
+@lru_cache(maxsize=1)
+def get_searxng_manager() -> SearXNGProcessManager:
+    """Process-wide singleton — app/bootstrap.py and tools/web_search.py
+    must share the exact same instance (not just the same settings), or
+    shutdown() could fail to stop a process a *different* manager instance
+    spawned. Tests that change JARVIS_DATA_DIR/settings mid-session must
+    call get_searxng_manager.cache_clear() alongside get_settings.
+    cache_clear() (see tests/conftest.py's isolated_settings/real_db) —
+    otherwise a manager cached from an earlier test's settings would leak
+    into a later one."""
+    return SearXNGProcessManager(get_settings())

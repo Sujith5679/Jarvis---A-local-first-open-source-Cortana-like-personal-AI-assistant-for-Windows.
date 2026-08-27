@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from config.settings import get_settings
 from storage.migrations import apply_migrations
+from web.searxng_process import get_searxng_manager
 
 
 @pytest.fixture
@@ -19,9 +20,16 @@ def isolated_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("JARVIS_DATA_DIR", str(tmp_path))
     get_settings.cache_clear()
+    # get_searxng_manager() caches a manager built from whatever Settings
+    # was current at its first call — without clearing it here too, a
+    # manager cached from an earlier test's (or the real repo's) Settings
+    # would leak into this test, potentially with SEARXNG_AUTOSTART=true
+    # pointed at a stale/wrong directory.
+    get_searxng_manager.cache_clear()
     settings = get_settings()
     yield settings
     get_settings.cache_clear()
+    get_searxng_manager.cache_clear()
 
 
 @pytest.fixture
@@ -46,6 +54,7 @@ def real_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("JARVIS_DATA_DIR", str(tmp_path))
     get_settings.cache_clear()
+    get_searxng_manager.cache_clear()  # see isolated_settings for why
     settings = get_settings()
 
     from storage.database import connect
@@ -58,6 +67,7 @@ def real_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     yield settings
     get_settings.cache_clear()
+    get_searxng_manager.cache_clear()
 
 
 @pytest.fixture

@@ -86,6 +86,15 @@ DEFAULT_APP_ALLOWLIST: dict[str, str] = {
     "control panel": "control.exe",
 }
 
+# --- Web (SearXNG auto-start, web/searxng_process.py) ---
+# How long to wait, once SearXNG's process has been spawned, for it to
+# actually become reachable before giving up and letting the search request
+# that triggered the lazy start fail with the normal "unavailable" error.
+# Live-measured real boot time was ~2s; this leaves generous headroom for a
+# slower/cold-cache first start without making a stalled instance hang the
+# triggering search indefinitely.
+DEFAULT_SEARXNG_STARTUP_WAIT_SECONDS = 15.0
+
 # --- Startup validation (spec.md §50) ---
 # Keep this well under the perf budget for app startup (spec.md §42) - no
 # live network calls here, just fast local checks. The one exception

@@ -15,7 +15,7 @@ from config.settings import Settings, get_settings
 from security.audit import log_event
 from storage.database import connect
 from storage.migrations import apply_migrations
-from web.searxng_process import SearXNGProcessManager
+from web.searxng_process import SearXNGProcessManager, get_searxng_manager
 
 _LOG_FORMAT = "%(asctime)s %(levelname)-8s %(name)s: %(message)s"
 
@@ -60,11 +60,12 @@ def bootstrap() -> BootstrapContext:
     logger = _configure_logging(settings)
     logger.info("JARVIS bootstrap starting (data_dir=%s)", settings.data_dir)
 
-    # Started early (before DB/migrations) so it has the most possible head
-    # start on its own boot time before anything actually needs it — a
-    # no-op unless SEARXNG_AUTOSTART is set (see web/searxng_process.py).
-    searxng = SearXNGProcessManager(settings)
-    searxng.start()
+    # Deliberately NOT started here — SearXNG only spawns on the first
+    # actual web search (tools/web_search.py's ensure_started() call), so a
+    # session that never searches the web never runs it at all. This just
+    # gets the shared manager instance so shutdown() below can stop
+    # whatever tools/web_search.py may have started later.
+    searxng = get_searxng_manager()
 
     conn = connect()
     try:

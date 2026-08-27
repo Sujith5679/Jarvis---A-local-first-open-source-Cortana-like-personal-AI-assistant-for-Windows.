@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from config.settings import Settings
-from web.searxng_process import SearXNGProcessManager
+from web.searxng_process import SearXNGProcessManager, get_searxng_manager
 
 
 def _settings(**overrides) -> Settings:
@@ -244,3 +244,153 @@ def test_is_running_false_when_process_exited():
 def test_is_running_false_before_start(autostart):
     mgr = SearXNGProcessManager(_settings(SEARXNG_AUTOSTART=autostart))
     assert mgr.is_running is False
+
+
+# --- ensure_started(): the lazy-start entry point tools/web_search.py calls ---
+
+
+@pytest.mark.asyncio
+async def test_ensure_started_noop_when_autostart_disabled(monkeypatch):
+    def fail(*a, **kw):
+        raise AssertionError("Popen should not be called")
+
+    monkeypatch.setattr(subprocess, "Popen", fail)
+    mgr = SearXNGProcessManager(_settings(SEARXNG_AUTOSTART=False))
+    await mgr.ensure_started()
+    assert mgr._process is None
+
+
+@pytest.mark.asyncio
+async def test_ensure_started_noop_when_already_reachable(monkeypatch, tmp_path):
+    _venv_python(tmp_path)
+
+    def fake_get(url, timeout):
+        return httpx.Response(200, request=httpx.Request("GET", url))
+
+    def fail_popen(*a, **kw):
+        raise AssertionError("Popen should not be called when already reachable")
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    monkeypatch.setattr(subprocess, "Popen", fail_popen)
+
+    mgr = SearXNGProcessManager(_settings(SEARXNG_AUTOSTART=True, SEARXNG_DIR=str(tmp_path)))
+    await mgr.ensure_started()
+    assert mgr._process is None
+
+
+@pytest.mark.asyncio
+async def test_ensure_started_spawns_and_waits_until_reachable(monkeypatch, tmp_path):
+    """Simulates SearXNG taking a couple of poll cycles to boot. Two of the
+    reachability checks are ensure_started()'s/start()'s own pre-spawn
+    "is it already up?" checks (both fail here, so it actually spawns);
+    poll_failures more happen inside the wait loop before it succeeds."""
+    _venv_python(tmp_path)
+
+    pre_spawn_checks = 2
+    poll_failures = 2
+    reachable_at_call = pre_spawn_checks + poll_failures + 1
+    calls = {"n": 0}
+
+    def fake_get(url, timeout):
+        calls["n"] += 1
+        if calls["n"] < reachable_at_call:
+            raise httpx.ConnectError("still booting")
+        return httpx.Response(200, request=httpx.Request("GET", url))
+
+    def fake_popen(args, **kw):
+        return SimpleNamespace(pid=1234, poll=lambda: None)
+
+    sleeps = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr("web.searxng_process.asyncio.sleep", fake_sleep)
+
+    mgr = SearXNGProcessManager(_settings(SEARXNG_AUTOSTART=True, SEARXNG_DIR=str(tmp_path)))
+    await mgr.ensure_started()
+
+    assert mgr.is_running is True
+    assert len(sleeps) == poll_failures  # slept once per failed poll, not after success
+
+
+@pytest.mark.asyncio
+async def test_ensure_started_gives_up_without_raising_if_never_reachable(monkeypatch, tmp_path):
+    _venv_python(tmp_path)
+
+    def fake_get(url, timeout):
+        raise httpx.ConnectError("never comes up")
+
+    def fake_popen(args, **kw):
+        return SimpleNamespace(pid=1234, poll=lambda: None)
+
+    async def fake_sleep(seconds):
+        pass
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr("web.searxng_process.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("web.searxng_process.time.monotonic", _make_fake_clock(step=1.0, limit=20))
+
+    mgr = SearXNGProcessManager(
+        _settings(SEARXNG_AUTOSTART=True, SEARXNG_DIR=str(tmp_path))
+    )
+    await mgr.ensure_started(wait_timeout=5.0)  # must not raise, must return
+
+
+@pytest.mark.asyncio
+async def test_ensure_started_skips_wait_when_start_itself_fails(monkeypatch, tmp_path):
+    """No venv found -> start() is a no-op -> ensure_started must not enter
+    the polling loop at all (nothing was spawned to wait for)."""
+
+    def fake_get(url, timeout):
+        raise httpx.ConnectError("refused")
+
+    async def fail_sleep(seconds):
+        raise AssertionError("should never poll if nothing was started")
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    monkeypatch.setattr("web.searxng_process.asyncio.sleep", fail_sleep)
+
+    mgr = SearXNGProcessManager(_settings(SEARXNG_AUTOSTART=True, SEARXNG_DIR=str(tmp_path)))
+    await mgr.ensure_started()
+    assert mgr._process is None
+
+
+def _make_fake_clock(*, step: float, limit: int):
+    state = {"t": 0.0, "n": 0}
+
+    def _clock():
+        state["n"] += 1
+        if state["n"] > limit:
+            raise RuntimeError("fake clock exceeded iteration limit — infinite loop?")
+        state["t"] += step
+        return state["t"]
+
+    return _clock
+
+
+# --- get_searxng_manager(): process-wide singleton -----------------------
+
+
+def test_get_searxng_manager_returns_same_instance():
+    get_searxng_manager.cache_clear()
+    try:
+        first = get_searxng_manager()
+        second = get_searxng_manager()
+        assert first is second
+    finally:
+        get_searxng_manager.cache_clear()
+
+
+def test_get_searxng_manager_cache_clear_gives_fresh_instance():
+    get_searxng_manager.cache_clear()
+    try:
+        first = get_searxng_manager()
+        get_searxng_manager.cache_clear()
+        second = get_searxng_manager()
+        assert first is not second
+    finally:
+        get_searxng_manager.cache_clear()

@@ -3,6 +3,10 @@
 Returns titles/URLs/snippets only, never full page content (that's
 open_webpage's job) — "never return more data than required" (§18's rule
 applies here too).
+
+This is also the one trigger point for SearXNG's lazy auto-start (see
+web/searxng_process.py's module docstring) — a session that never calls
+this tool never spawns SearXNG at all, even with SEARXNG_AUTOSTART=true.
 """
 
 from __future__ import annotations
@@ -12,6 +16,7 @@ from typing import Any
 from config.defaults import DEFAULT_WEB_SEARCH_MAX_RESULTS
 from config.settings import get_settings
 from web.search import SearXNGUnavailableError, build_default_client
+from web.searxng_process import get_searxng_manager
 
 from tools.registry import Tool, ToolMetadata
 
@@ -22,6 +27,8 @@ async def web_search_handler(
     query = (query or "").strip()
     if not query:
         return {"results": []}
+
+    await get_searxng_manager().ensure_started()
 
     client = build_default_client(get_settings())
     try:

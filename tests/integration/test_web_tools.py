@@ -26,6 +26,42 @@ async def test_web_search_gracefully_degrades_when_searxng_unreachable(real_db):
 
 
 @pytest.mark.asyncio
+async def test_web_search_triggers_lazy_searxng_start(real_db, monkeypatch):
+    """web_search is the one place that's supposed to trigger SearXNG's lazy
+    auto-start (web/searxng_process.py) — confirms the call actually
+    happens, without spinning up a real subprocess."""
+    calls = []
+
+    class _FakeManager:
+        async def ensure_started(self):
+            calls.append("called")
+
+    monkeypatch.setattr("tools.web_search.get_searxng_manager", lambda: _FakeManager())
+
+    async def fake_search(self, query, max_results=8):
+        return []
+
+    monkeypatch.setattr("web.search.SearXNGClient.search", fake_search)
+
+    await web_search_handler("anything")
+    assert calls == ["called"]
+
+
+@pytest.mark.asyncio
+async def test_web_search_empty_query_skips_searxng_start_entirely(real_db, monkeypatch):
+    """No query means no search is actually issued - ensure_started()
+    shouldn't run either, since there's nothing to search for."""
+
+    def fail():
+        raise AssertionError("get_searxng_manager should not be called for an empty query")
+
+    monkeypatch.setattr("tools.web_search.get_searxng_manager", fail)
+
+    result = await web_search_handler("   ")
+    assert result["results"] == []
+
+
+@pytest.mark.asyncio
 async def test_web_search_success(real_db, monkeypatch):
     async def fake_search(self, query, max_results=8):
         return [SearchResult(title="Result A", url="https://a.example", snippet="snippet a")]
