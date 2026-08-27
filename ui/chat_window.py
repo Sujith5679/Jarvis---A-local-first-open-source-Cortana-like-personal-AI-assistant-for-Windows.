@@ -16,12 +16,17 @@ playback all run on `VoiceTurnWorker` off the UI thread. Voice is entirely
 optional — `JARVIS_ENABLE_VOICE=false` hides the mic button, and any STT/TTS
 failure degrades to text-only rather than blocking the user (spec.md §32).
 
-Windows integration (spec.md §57 Phase 6): `run()` wires up the system tray
-icon (`ui/tray.py`) and global hotkey (`ui/hotkey.py`) around this window.
-Closing the window (the titlebar X) hides it to the tray rather than
-exiting — see `closeEvent`. Both are best-effort: if tray/hotkey
-registration fails for any reason, the window still runs as a normal
-top-level window (spec.md §32's graceful-degradation rule, same as voice).
+Windows integration (spec.md §57 Phase 6, revised): `run()` wires up a
+system tray icon (`ui/tray.py`) for quick actions (pause indexing, voice
+toggle, reindex, view logs) while the app is open — but the *process*
+itself now runs on demand rather than staying resident: closing the window
+(the titlebar X, or tray Quit) fully exits (see `closeEvent`), and the
+global hotkey lives entirely in the separate, lightweight
+`app/supervisor.py` process instead of here, so nothing about this heavy
+process (agent, RAG, voice models) needs to stay loaded in memory just to
+keep Ctrl+Space available. Tray registration is still best-effort — if it
+fails, the window just runs as a normal top-level window (spec.md §32's
+graceful-degradation rule, same as voice).
 """
 
 from __future__ import annotations
@@ -191,12 +196,11 @@ class ChatWindow(QMainWindow):
         self.agent = build_agent(ctx.settings)
         self.conversation_id = conv_repo.create_conversation()
         self._worker: ChatTurnWorker | ConfirmTurnWorker | VoiceTurnWorker | None = None
-        # Set by ui.tray.TrayIcon/ui.hotkey.GlobalHotkey after construction
-        # (see run() below) — None means "no tray this run" (e.g. platform
-        # without one), in which case closeEvent must exit for real rather
-        # than hide to a tray icon that doesn't exist.
+        # Set by run() below after construction, if a tray is available on
+        # this platform — purely a convenience menu (pause indexing,
+        # voice toggle, reindex, view logs) while the app happens to be
+        # open; the global hotkey now lives entirely in app/supervisor.py.
         self.tray = None
-        self._really_quit = False
 
         self.setWindowTitle("JARVIS")
         self.resize(380, 540)
@@ -260,15 +264,11 @@ class ChatWindow(QMainWindow):
         self.scheduler.start()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt override
-        # With a tray icon present, the titlebar X minimizes to tray instead
-        # of exiting — only ui.tray.TrayIcon.quit_app() (which sets
-        # _really_quit first) actually ends the process. Without a tray
-        # (e.g. registration failed), closing the only window must still
-        # exit normally rather than vanish with no way back.
-        if self.tray is not None and not self._really_quit:
-            event.ignore()
-            self.hide()
-            return
+        # Closing the window (the titlebar X, or ui.tray.TrayIcon.quit_app())
+        # always fully exits — app/supervisor.py is what stays resident for
+        # the global hotkey now, so this process only needs to run while
+        # actually in use. Ctrl+Space (or the supervisor's own tray icon)
+        # launches a fresh instance the next time it's needed.
         self.scheduler.stop()
         super().closeEvent(event)
 
@@ -409,12 +409,13 @@ class ChatWindow(QMainWindow):
 def run(ctx: BootstrapContext, health_results: list | None = None) -> int:
     import sys
 
+    from app.qt_sigint import enable_ctrl_c_quit
     from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
-    from ui.hotkey import GlobalHotkey
     from ui.tray import TrayIcon
 
     app = QApplication.instance() or QApplication(sys.argv)
+    _sigint_timer = enable_ctrl_c_quit(app)  # noqa: F841 - must stay alive until app.exec() returns
     window = ChatWindow(ctx)
 
     if health_results:
@@ -428,19 +429,12 @@ def run(ctx: BootstrapContext, health_results: list | None = None) -> int:
         tray = TrayIcon(window)
         tray.show()
         window.tray = tray
-        app.setQuitOnLastWindowClosed(False)
     else:
         logger.info("No system tray available on this platform — running without one.")
 
-    hotkey = GlobalHotkey(ctx.settings.jarvis_hotkey)
-    hotkey.bridge.triggered.connect(window.show_and_focus)
-    hotkey.register()
+    # Always shown on launch now — whether started manually or by
+    # app/supervisor.py's hotkey/tray, this process only exists because
+    # someone just asked for it, so there's no "start hidden" case anymore.
+    window.show()
 
-    starts_hidden_in_tray = ctx.settings.jarvis_start_minimized and window.tray is not None
-    if not starts_hidden_in_tray:
-        window.show()
-
-    try:
-        return app.exec()
-    finally:
-        hotkey.unregister()
+    return app.exec()

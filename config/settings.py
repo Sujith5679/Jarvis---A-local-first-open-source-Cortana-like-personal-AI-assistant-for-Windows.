@@ -77,12 +77,17 @@ class Settings(BaseSettings):
     # enable_startup()/disable_startup() (an explicit checkbox toggle) ever
     # changes it - nothing reads this field automatically at bootstrap.
     jarvis_start_on_boot: bool = Field(default=False, alias="JARVIS_START_ON_BOOT")
+    # Currently unused/vestigial: the on-demand supervisor model
+    # (app/supervisor.py) means the main app only ever launches because
+    # something (a person, or the hotkey) just asked for it, so there's no
+    # "start hidden" case to apply this to anymore. Left defined rather
+    # than removed so an existing .env setting doesn't start erroring.
     jarvis_start_minimized: bool = Field(default=True, alias="JARVIS_START_MINIMIZED")
     jarvis_enable_voice: bool = Field(default=True, alias="JARVIS_ENABLE_VOICE")
     jarvis_enable_wake_word: bool = Field(default=False, alias="JARVIS_ENABLE_WAKE_WORD")
-    # spec.md §26: configurable, defaults to Ctrl+Space. Parsed by ui/hotkey.py
-    # using the `keyboard` library's hotkey syntax (e.g. "ctrl+space",
-    # "ctrl+alt+j").
+    # spec.md §26: configurable, defaults to Ctrl+Space. Parsed by
+    # ui/hotkey.py (used by app/supervisor.py) using the `keyboard`
+    # library's hotkey syntax (e.g. "ctrl+space", "ctrl+alt+j").
     jarvis_hotkey: str = Field(default=DEFAULT_HOTKEY, alias="JARVIS_HOTKEY")
 
     # --- Voice ---

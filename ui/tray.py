@@ -15,9 +15,11 @@ monogram rather than a placeholder image file that would need replacing
 later anyway — swap `_build_icon()` for `QIcon("path/to/real/icon.ico")`
 once real branding exists.
 
-Closing the main window (the titlebar X) hides it to the tray instead of
-exiting — only this menu's "Quit" (or `TrayIcon.quit_app()`) actually ends
-the process. See `ui/chat_window.py`'s `closeEvent`/`_really_quit`.
+This tray icon only exists while JARVIS's main window is actually running
+— it's a convenience menu for that session, not what keeps Ctrl+Space
+available (that's app/supervisor.py's separate, always-on tray+hotkey
+process). Closing the window (the titlebar X, or this menu's "Quit") fully
+exits the process — see ui/chat_window.py's closeEvent.
 """
 
 from __future__ import annotations
@@ -153,6 +155,5 @@ class TrayIcon(QSystemTrayIcon):
             logger.warning("Could not open logs folder: %s", exc)
 
     def quit_app(self) -> None:
-        self.window._really_quit = True
-        self.window.close()
+        self.window.close()  # closeEvent always fully exits now
         QApplication.instance().quit()

@@ -136,22 +136,35 @@ and set `JARVIS_PIPER_VOICE_PATH` in `.env` to the downloaded `.onnx` file's pat
 
 ## Windows integration
 
-- **System tray**: JARVIS runs from the tray once started — Open JARVIS, Start/Stop
-  voice, Pause indexing, Settings, Reindex files, View logs, Quit. Closing the chat
-  window (the titlebar X) minimizes to tray rather than exiting; use tray → Quit to
-  actually close JARVIS. If `JARVIS_START_MINIMIZED=true` (the default), JARVIS
-  starts hidden in the tray rather than opening a window immediately.
-- **Global hotkey**: default `Ctrl+Space` opens/focuses the popup from anywhere.
-  Configurable via `JARVIS_HOTKEY` in `.env` (e.g. `ctrl+alt+j`), using the
+JARVIS runs **on demand**, not as a permanently-resident background process: the
+full app (agent, RAG, voice — everything, ~100MB+ once warmed up) only runs while
+you're actually using it, and closing its window fully exits it, freeing that
+memory. A separate, much lighter always-on **supervisor** process
+(`app/supervisor.py` — just a tray icon and the global hotkey, no agent/RAG/voice
+imports at all) is what stays running in the background so Ctrl+Space keeps
+working even when JARVIS itself isn't open.
+
+- **Global hotkey**: default `Ctrl+Space`, configurable via `JARVIS_HOTKEY` in
+  `.env` (e.g. `ctrl+alt+j`), using the
   [`keyboard`](https://github.com/boppreh/keyboard) library's combo syntax. If
-  registration fails for any reason (another app already owns the combo, a
-  restrictive permission context, ...) JARVIS logs a warning and keeps running
-  normally — the hotkey is a convenience, not a requirement.
+  JARVIS isn't running, pressing it launches a fresh instance (~1-3s); if it's
+  already running (even minimized), it's brought to the foreground instead. If
+  hotkey registration fails for any reason (another app already owns the combo, a
+  restrictive permission context, ...) it's logged as a warning and everything else
+  keeps working — the hotkey is a convenience, not a requirement.
+- **Running it**: `start_jarvis_supervisor.bat` starts just the lightweight
+  supervisor (tray icon + hotkey) — nothing else runs until you actually open
+  JARVIS. `start_jarvis.bat` (what the supervisor itself launches) starts the full
+  app directly, same as always, if you'd rather skip the supervisor.
+- **Closing it**: the titlebar X (or JARVIS's own tray icon → Quit, which is a
+  per-session convenience menu — Pause indexing, Start/Stop voice, Reindex files,
+  View logs — separate from the supervisor's tray icon) fully exits the full app.
+  The supervisor keeps running afterward so Ctrl+Space still works next time.
 - **Start with Windows**: toggle "Start JARVIS with Windows" in Settings. This
   registers/removes a per-user Windows Task Scheduler entry (`schtasks`) that runs
-  `start_jarvis.bat` at logon — off by default, and only ever changed by that
-  checkbox (never automatically, per spec.md §27: "Do not force automatic
-  startup").
+  `start_jarvis_supervisor.bat` (not the full app) at logon — off by default, and
+  only ever changed by that checkbox (never automatically, per spec.md §27: "Do not
+  force automatic startup").
 - **Application launching**: the `launch_application` tool can only run apps from a
   fixed allowlist (notepad, calculator, paint, wordpad, explorer, snipping tool,
   task manager, control panel — see `config/defaults.py`'s

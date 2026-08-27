@@ -5,10 +5,16 @@ it is NOT an agent tool — letting the LLM register its own auto-start would
 be a real privilege-escalation-adjacent surface, unlike the read-only or
 explicitly-confirmed tools in tools/windows.py.
 
+Registers `start_jarvis_supervisor.bat`, NOT `start_jarvis.bat` — the
+lightweight always-on supervisor (app/supervisor.py: just the global
+hotkey + a tray icon), not the full app. The full app only launches on
+demand (hotkey/tray click), so what's actually resident from boot onward
+stays a small fraction of the full app's memory footprint. See
+app/supervisor.py's module docstring.
+
 Uses `schtasks.exe` (stdlib subprocess, no pywin32 dependency) to create a
-per-user logon task that runs `start_jarvis.bat` — the same launcher a
-person would double-click, resolving its own directory rather than
-depending on the current working directory (spec.md §27).
+per-user logon task, resolving its own directory rather than depending on
+the current working directory (spec.md §27).
 """
 
 from __future__ import annotations
@@ -21,7 +27,7 @@ from config.settings import BASE_DIR
 logger = logging.getLogger("jarvis.app.windows_startup")
 
 TASK_NAME = "JARVIS_AutoStart"
-_LAUNCHER = BASE_DIR / "start_jarvis.bat"
+_LAUNCHER = BASE_DIR / "start_jarvis_supervisor.bat"
 
 
 class StartupTaskError(Exception):
