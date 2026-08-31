@@ -57,6 +57,7 @@ from voice.stt import transcribe as stt_transcribe
 from voice.tts import SynthesisError
 from voice.tts import synthesize as tts_synthesize
 
+from ui.mcp_settings import MCPServersDialog
 from ui.messages import ChatLog
 from ui.notifications import NotificationService
 from ui.settings import FoldersDialog
@@ -95,9 +96,16 @@ class MCPDiscoveryWorker(QThread):
     seconds and must never block the UI (spec.md §42), same reasoning as
     IndexingWorker (ui/settings.py). Tools become available for the *next*
     agent turn once this finishes — a turn already in flight when discovery
-    completes doesn't retroactively gain them."""
+    completes doesn't retroactively gain them.
 
-    finished_ok = Signal(list)  # list[MCPConnection]
+    No connection is kept open once this finishes — each MCP tool call
+    later opens its own short-lived connection (integrations/mcp/bridge.py's
+    module docstring explains why: an mcp.Client's background tasks are
+    tied to the event loop that opened it, and that loop is this worker's
+    own asyncio.run() call, which is long gone by the time a tool actually
+    gets invoked from a separate agent turn)."""
+
+    finished_ok = Signal(int)  # number of MCP servers successfully reached
     failed = Signal(str)
 
     def __init__(self, registry) -> None:
@@ -108,8 +116,8 @@ class MCPDiscoveryWorker(QThread):
         from integrations.mcp.bridge import discover_and_register
 
         try:
-            connections = asyncio.run(discover_and_register(self.registry))
-            self.finished_ok.emit(connections)
+            reached = asyncio.run(discover_and_register(self.registry))
+            self.finished_ok.emit(reached)
         except Exception as exc:  # pragma: no cover - defensive; discover_and_register
             # itself never raises (per-server failures are caught internally) - this only
             # catches a genuinely unexpected bug, so MCP can never take the app down.
@@ -225,14 +233,10 @@ class ChatWindow(QMainWindow):
         self.agent = build_agent(ctx.settings)
         self.conversation_id = conv_repo.create_conversation()
         self._worker: ChatTurnWorker | ConfirmTurnWorker | VoiceTurnWorker | None = None
-        self._mcp_connections: list = []
-        self._mcp_worker = MCPDiscoveryWorker(self.agent.tool_registry)
-        self._mcp_worker.finished_ok.connect(self._on_mcp_ready)
-        self._mcp_worker.failed.connect(
-            lambda msg: logger.warning("MCP discovery failed: %s", msg)
-        )
-        self._mcp_worker.finished.connect(self._mcp_worker.deleteLater)
-        self._mcp_worker.start()
+        self._mcp_server_count = 0  # how many MCP servers are currently reachable
+        self._mcp_worker: MCPDiscoveryWorker | None = None
+        self._mcp_reconnect_callback = None
+        self._start_mcp_discovery()
         # Set by run() below after construction, if a tray is available on
         # this platform — purely a convenience menu (pause indexing,
         # voice toggle, reindex, view logs) while the app happens to be
@@ -248,6 +252,8 @@ class ChatWindow(QMainWindow):
         manage_folders_action.triggered.connect(self._open_folders_dialog)
         usage_action = settings_menu.addAction("Usage && Costs...")
         usage_action.triggered.connect(self._open_usage_dialog)
+        mcp_action = settings_menu.addAction("MCP Servers...")
+        mcp_action.triggered.connect(self._open_mcp_dialog)
 
         central = QWidget(self)
         layout = QVBoxLayout(central)
@@ -305,18 +311,79 @@ class ChatWindow(QMainWindow):
         # always fully exits — app/supervisor.py is what stays resident for
         # the global hotkey now, so this process only needs to run while
         # actually in use. Ctrl+Space (or the supervisor's own tray icon)
-        # launches a fresh instance the next time it's needed.
+        # launches a fresh instance the next time it's needed. Nothing to
+        # tear down for MCP here — no connection is ever kept open between
+        # calls (integrations/mcp/bridge.py's module docstring explains why).
         self.scheduler.stop()
-        if self._mcp_connections:
-            from integrations.mcp.bridge import close_all
-
-            asyncio.run(close_all(self._mcp_connections))
         super().closeEvent(event)
 
-    def _on_mcp_ready(self, connections: list) -> None:
-        self._mcp_connections = connections
-        if connections:
-            self.chat_log.append_status(f"🔌 Connected {len(connections)} MCP server(s).")
+    # --- MCP (integrations/mcp/) ------------------------------------------
+    #
+    # _start_mcp_discovery() and reconnect_mcp_servers() must never run
+    # concurrently — discover_and_register() mutates the shared tool
+    # registry directly from the worker thread, so two overlapping calls
+    # (e.g. the initial startup discovery still in flight when the user
+    # opens Settings and clicks "Reconnect Now" right away) would both
+    # register into the same registry and collide. Guarded the same way
+    # ui/settings.py's IndexingWorker/_start_indexing() already guards
+    # against a second indexing run starting mid-first-run: refuse to
+    # start while `_mcp_worker.isRunning()`, rather than trying to
+    # reconcile two interleaved results afterward.
+
+    def _start_mcp_discovery(self) -> bool:
+        """Returns True if a discovery run was actually started, False if
+        one was already in progress."""
+        if self._mcp_worker is not None and self._mcp_worker.isRunning():
+            return False
+        worker = MCPDiscoveryWorker(self.agent.tool_registry)
+        worker.finished_ok.connect(self._on_mcp_discovery_finished)
+        worker.failed.connect(lambda msg: logger.warning("MCP discovery failed: %s", msg))
+        # Clearing self._mcp_worker must happen before deleteLater() runs -
+        # deleteLater() destroys the underlying C++ QThread object, and any
+        # later self._mcp_worker.isRunning() call (the busy-guard above) on
+        # a reference to that now-deleted object raises
+        # "RuntimeError: Internal C++ object already deleted", not just
+        # returns a stale value. Both are connected to the same `finished`
+        # signal and run in connection order, so this one first is enough.
+        worker.finished.connect(self._on_mcp_worker_thread_finished)
+        worker.finished.connect(worker.deleteLater)
+        self._mcp_worker = worker
+        worker.start()
+        return True
+
+    def _on_mcp_worker_thread_finished(self) -> None:
+        self._mcp_worker = None
+
+    def _on_mcp_discovery_finished(self, server_count: int) -> None:
+        self._mcp_server_count = server_count
+        if server_count:
+            self.chat_log.append_status(f"🔌 Connected {server_count} MCP server(s).")
+        if self._mcp_reconnect_callback is not None:
+            callback = self._mcp_reconnect_callback
+            self._mcp_reconnect_callback = None
+            callback(server_count)
+
+    def reconnect_mcp_servers(self, on_done=None) -> bool:
+        """Unregisters every current MCP tool, then reconnects from the
+        current mcp_servers.json — what ui/mcp_settings.py's "Reconnect
+        Now" calls after an add/edit/remove, so changes take effect
+        without restarting JARVIS.
+
+        Returns True if a reconnect was actually started, False if a
+        discovery/reconnect was already in progress (caller should ask the
+        user to wait a moment and try again — `on_done` is NOT called in
+        that case, since nothing was actually kicked off)."""
+        if self._mcp_worker is not None and self._mcp_worker.isRunning():
+            return False
+
+        for tool in list(self.agent.tool_registry.all()):
+            if tool.name.startswith("mcp__"):
+                self.agent.tool_registry.unregister(tool.name)
+        self._mcp_server_count = 0
+
+        self._mcp_reconnect_callback = on_done
+        self._start_mcp_discovery()
+        return True
 
     def show_and_focus(self) -> None:
         self.showNormal()
@@ -333,6 +400,10 @@ class ChatWindow(QMainWindow):
 
     def _open_usage_dialog(self) -> None:
         dialog = UsageDialog(str(self.conversation_id), self)
+        dialog.exec()
+
+    def _open_mcp_dialog(self) -> None:
+        dialog = MCPServersDialog(self, self)
         dialog.exec()
 
     def _on_reminder_fired(self, reminder: dict) -> None:

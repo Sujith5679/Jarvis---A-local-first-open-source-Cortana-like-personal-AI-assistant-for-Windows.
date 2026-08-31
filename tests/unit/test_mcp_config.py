@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import json
 
-from integrations.mcp.config import CONFIG_PATH, load_all_mcp_servers, load_mcp_servers
+from integrations.mcp.config import (
+    CONFIG_PATH,
+    MCPServerConfig,
+    load_all_mcp_servers,
+    load_mcp_servers,
+    save_mcp_servers,
+)
 
 
 def _write(tmp_path, data: dict):
@@ -105,3 +111,53 @@ def test_no_path_argument_respects_isolated_cwd(real_db):
     real_db fixture's isolated tmp_path (which it chdir's into) - never
     the real repo's mcp_servers.json, even if one exists on this machine."""
     assert load_mcp_servers() == []
+
+
+# --- save_mcp_servers(): ui/mcp_settings.py's add/edit/remove form -------
+
+
+def test_save_then_load_round_trips(tmp_path):
+    path = tmp_path / "mcp_servers.json"
+    configs = [
+        MCPServerConfig(
+            name="filesystem",
+            command="npx",
+            args=["-y", "@modelcontextprotocol/server-filesystem"],
+            env={"TOKEN": "abc"},
+            enabled=True,
+        ),
+        MCPServerConfig(name="disabled-one", command="python", enabled=False),
+    ]
+    save_mcp_servers(configs, path)
+
+    loaded = load_all_mcp_servers(path)
+    assert loaded == configs
+
+
+def test_save_overwrites_existing_file(tmp_path):
+    path = tmp_path / "mcp_servers.json"
+    save_mcp_servers([MCPServerConfig(name="a", command="x")], path)
+    save_mcp_servers([MCPServerConfig(name="b", command="y")], path)
+
+    loaded = load_all_mcp_servers(path)
+    assert [c.name for c in loaded] == ["b"]
+
+
+def test_save_empty_list_produces_empty_config(tmp_path):
+    path = tmp_path / "mcp_servers.json"
+    save_mcp_servers([], path)
+    assert load_all_mcp_servers(path) == []
+
+
+def test_save_writes_valid_json_matching_documented_shape(tmp_path):
+    path = tmp_path / "mcp_servers.json"
+    save_mcp_servers(
+        [MCPServerConfig(name="x", command="npx", args=["-y"], env={"K": "V"}, enabled=False)],
+        path,
+    )
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data == {
+        "mcpServers": {
+            "x": {"command": "npx", "args": ["-y"], "env": {"K": "V"}, "enabled": False}
+        }
+    }

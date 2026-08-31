@@ -14,14 +14,25 @@ Claude Code itself uses for MCP tools) so they can never collide with a
 built-in tool name and so the confirmation dialog always shows which
 server a proposed action actually comes from.
 
-One connection per configured+enabled server, opened once at registry-
-build time — schema discovery needs a live round trip, and the LLM must
-see tool schemas up front to ever propose calling one — then kept open for
-the process's lifetime (closed via `close_all()` at shutdown) so repeat
-calls reuse it rather than paying a fresh subprocess-spawn cost every
-time. Same "start once, stay up for the session" choice already made for
-SearXNG (see web/searxng_process.py's module docstring). A server that
-fails to start/connect is skipped with a warning — never fatal to startup,
+IMPORTANT — connections are NOT kept open across calls, on purpose. The
+first version of this module tried to (mirroring web/searxng_process.py's
+"start once, stay up for the session" choice) - live-testing caught that
+this actually hangs: an `mcp.Client`'s background reader/writer tasks are
+tied to the specific asyncio event loop that opened it, and every call
+into this module (from ui/chat_window.py's MCPDiscoveryWorker, and
+separately from whatever `asyncio.run()` call is driving the agent turn
+that later invokes a tool) runs on its OWN fresh event loop. Reusing a
+`Client` across that boundary silently breaks — the SearXNG comparison
+doesn't hold, because SearXNG is a *separate OS process* accessed over
+ordinary independent HTTP requests each time (no shared async state), not
+one async object whose internals are bound to a single event loop's
+lifetime. So: `list_tools()` (discovery) and each tool call both open
+their own short-lived connection, use it, and close it within one
+self-contained coroutine — safe regardless of which event loop calls
+them. This costs a fresh subprocess-spawn per tool call (bounded by
+MCP_TOOL_TIMEOUT_SECONDS), which is the honest price of correctness here.
+A server that can't be reached is logged and skipped/reported as a tool
+error — never fatal to startup or to the agent turn that tried to use it,
 same graceful-degradation rule as every other optional subsystem.
 """
 
@@ -70,21 +81,20 @@ def _result_to_dict(result: Any) -> dict[str, Any]:
 
 
 class MCPConnection:
-    """One live connection to one MCP server, kept open for reuse across
-    calls. `connect()`/`close()` are the only lifecycle methods callers
-    outside this module need — `discover_and_register()` drives both.
+    """Represents one configured MCP server. Each method opens its own
+    short-lived connection, uses it, and closes it — see the module
+    docstring for why a connection is never kept open across calls.
 
     `client_factory` defaults to building a real subprocess-backed `Client`
-    from `config`; tests override it to connect an in-process `MCPServer`
-    instead (see `mcp.Client`'s constructor — it accepts either), so the
-    real MCP protocol exchange gets exercised without spawning a process.
+    from `config`, called fresh each time; tests override it to connect an
+    in-process `MCPServer` instead (see `mcp.Client`'s constructor — it
+    accepts either), so the real MCP protocol exchange gets exercised
+    without spawning a process.
     """
 
     def __init__(self, config: MCPServerConfig, *, client_factory=None) -> None:
         self.config = config
         self._client_factory = client_factory or self._default_client_factory
-        self._client: Client | None = None
-        self._client_cm: Any = None
 
     def _default_client_factory(self) -> Client:
         params = StdioServerParameters(
@@ -94,32 +104,21 @@ class MCPConnection:
         )
         return Client(params)
 
-    async def connect(self) -> None:
-        self._client_cm = self._client_factory()
-        self._client = await asyncio.wait_for(
-            self._client_cm.__aenter__(), timeout=MCP_CONNECT_TIMEOUT_SECONDS
-        )
-
-    async def close(self) -> None:
-        if self._client_cm is not None:
-            try:
-                await self._client_cm.__aexit__(None, None, None)
-            except Exception:
-                logger.warning("Error closing MCP server %r", self.config.name, exc_info=True)
-            finally:
-                self._client_cm = None
-                self._client = None
-
     async def list_tools(self) -> list[Any]:
-        assert self._client is not None, "connect() must succeed before list_tools()"
-        result = await self._client.list_tools()
-        return result.tools
+        async with self._client_factory() as client:
+            result = await asyncio.wait_for(
+                client.list_tools(), timeout=MCP_CONNECT_TIMEOUT_SECONDS
+            )
+            return result.tools
 
     def make_handler(self, mcp_tool_name: str):
         async def _handler(**kwargs: Any) -> dict[str, Any]:
-            assert self._client is not None, "MCP connection is not open"
             try:
-                result = await self._client.call_tool(mcp_tool_name, kwargs)
+                async with self._client_factory() as client:
+                    result = await asyncio.wait_for(
+                        client.call_tool(mcp_tool_name, kwargs),
+                        timeout=MCP_TOOL_TIMEOUT_SECONDS,
+                    )
             except Exception as exc:
                 return {"error": f"MCP tool call failed: {exc}"}
             return _result_to_dict(result)
@@ -132,12 +131,12 @@ async def discover_and_register(
     configs: list[MCPServerConfig] | None = None,
     *,
     connection_factory=None,
-) -> list[MCPConnection]:
-    """Connects to every enabled configured MCP server, discovers its
-    tools, and registers each as a `Tool`. Returns the live connections —
-    the caller owns closing them (see `close_all()`). Never raises: a
-    server that can't be reached is logged and skipped, the rest still
-    load normally.
+) -> int:
+    """Connects briefly to every enabled configured MCP server to list its
+    tools, registers each as a `Tool`, then disconnects — no connection is
+    kept open (see module docstring). Returns how many servers were
+    successfully reached. Never raises: a server that can't be reached is
+    logged and skipped, the rest still load normally.
 
     `connection_factory` defaults to `MCPConnection`; tests override it to
     inject an in-process server via `MCPConnection`'s own `client_factory`
@@ -145,16 +144,14 @@ async def discover_and_register(
     """
     configs = configs if configs is not None else load_mcp_servers()
     connection_factory = connection_factory or MCPConnection
-    connections: list[MCPConnection] = []
+    reached = 0
 
     for config in configs:
         conn = connection_factory(config)
         try:
-            await conn.connect()
             mcp_tools = await conn.list_tools()
         except Exception as exc:
             logger.warning("Could not connect to MCP server %r: %s", config.name, exc)
-            await conn.close()
             continue
 
         registered = 0
@@ -178,12 +175,7 @@ async def discover_and_register(
             except ValueError:
                 logger.warning("Tool name collision, skipping: %s", name)
 
-        connections.append(conn)
+        reached += 1
         logger.info("MCP server %r: registered %d tool(s)", config.name, registered)
 
-    return connections
-
-
-async def close_all(connections: list[MCPConnection]) -> None:
-    for conn in connections:
-        await conn.close()
+    return reached

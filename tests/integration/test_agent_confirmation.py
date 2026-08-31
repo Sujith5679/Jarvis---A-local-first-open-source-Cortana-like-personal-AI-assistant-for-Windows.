@@ -274,7 +274,7 @@ async def test_mcp_tool_pauses_for_confirmation_without_executing(real_db):
 
     registry = ToolRegistry()
     config = MCPServerConfig(name="chat", command="unused", args=[], env={})
-    connections = await discover_and_register(
+    await discover_and_register(
         registry,
         configs=[config],
         connection_factory=lambda cfg: MCPConnection(
@@ -310,8 +310,6 @@ async def test_mcp_tool_pauses_for_confirmation_without_executing(real_db):
     )
     assert confirmed["error"] is None
     assert calls == ["hello"]
-
-    await connections[0].close()
 
 
 @pytest.mark.asyncio

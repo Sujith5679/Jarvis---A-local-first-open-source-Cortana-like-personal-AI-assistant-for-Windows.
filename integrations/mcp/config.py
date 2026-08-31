@@ -88,3 +88,23 @@ def load_mcp_servers(path: Path | None = None) -> list[MCPServerConfig]:
     """Returns only the enabled servers — what integrations/mcp/bridge.py
     actually connects to."""
     return [c for c in load_all_mcp_servers(path) if c.enabled]
+
+
+def save_mcp_servers(configs: list[MCPServerConfig], path: Path | None = None) -> None:
+    """Writes the full server list back to mcp_servers.json, overwriting
+    it — used by ui/mcp_settings.py's add/edit/remove form. Always writes
+    the complete set (never a partial patch), so this is also what a
+    remove is: save the list without that entry."""
+    path = path or CONFIG_PATH
+    data = {
+        "mcpServers": {
+            c.name: {
+                "command": c.command,
+                "args": c.args,
+                "env": c.env,
+                "enabled": c.enabled,
+            }
+            for c in configs
+        }
+    }
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
