@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 from agent.graph import Agent
+from agent.prompts import MEMORY_SECTION_HEADER
 from llm.base import LLMResponse, TokenUsage
 from llm.manager import LLMManager
 from storage.repositories import conversations as conv_repo
@@ -62,6 +63,37 @@ async def test_run_turn_includes_system_prompt_and_history(real_db):
     contents = [m["content"] for m in stub.received_messages]
     assert "first message" in contents
     assert "second message" in contents
+
+
+@pytest.mark.asyncio
+async def test_run_turn_injects_remembered_facts_into_system_prompt(real_db):
+    """A fact remembered in one conversation must be visible in a
+    *different* conversation's system prompt — the whole point of
+    persistent memory vs. plain per-conversation history."""
+    from storage.repositories import memories as memories_repo
+
+    memories_repo.create_memory("The user prefers metric units.", memory_type="preference")
+
+    stub = _StubProvider()
+    agent = Agent(llm_manager=LLMManager([stub]), settings=real_db)
+    other_conv_id = conv_repo.create_conversation()  # a conversation that never saw this fact
+
+    await agent.run_turn(other_conv_id, "what's the weather like")
+
+    system_message = stub.received_messages[0]
+    assert system_message["role"] == "system"
+    assert "The user prefers metric units." in system_message["content"]
+
+
+@pytest.mark.asyncio
+async def test_run_turn_without_memories_has_no_memory_section(real_db):
+    stub = _StubProvider()
+    agent = Agent(llm_manager=LLMManager([stub]), settings=real_db)
+    conv_id = conv_repo.create_conversation()
+
+    await agent.run_turn(conv_id, "hello")
+
+    assert MEMORY_SECTION_HEADER not in stub.received_messages[0]["content"]
 
 
 @pytest.mark.asyncio

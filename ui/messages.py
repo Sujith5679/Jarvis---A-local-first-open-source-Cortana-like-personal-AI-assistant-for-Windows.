@@ -44,3 +44,16 @@ class ChatLog(QTextEdit):
         style = "margin:4px 0; color:#9ca3af; font-style:italic;"
         self.append(f'<p style="{style}">{html.escape(text)}</p>')
         self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
+
+    def load_history(self, messages: list[dict]) -> None:
+        """Replaces the whole log with `messages` (storage.repositories.
+        conversations.get_messages()'s shape) — used when switching to a
+        different (existing) conversation (ui/history.py). "tool" role
+        messages aren't rendered, same as they're excluded from
+        to_llm_messages() — they're turn-scoped plumbing, not something a
+        person reads back."""
+        self.clear()
+        for message in messages:
+            if message["role"] == "tool":
+                continue
+            self.append_message(message["role"], message["content"])

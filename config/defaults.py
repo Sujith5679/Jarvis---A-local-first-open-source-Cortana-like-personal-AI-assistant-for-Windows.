@@ -61,6 +61,18 @@ DEFAULT_WEB_EXTRACTED_TEXT_MAX_CHARS = 20_000  # never hand a whole raw page to 
 # --- Reminders / scheduler ---
 DEFAULT_REMINDER_POLL_INTERVAL_SECONDS = 30
 
+# --- Persistent memory (spec.md §30) ---
+# Injected into every turn's system prompt (agent/prompts.py) so a fact
+# remembered in one conversation carries into later, unrelated ones. Capped
+# rather than injecting everything ever remembered - keeps prompt size (and
+# LLM cost - see llm/pricing.py) bounded as memories accumulate over time.
+DEFAULT_MAX_INJECTED_MEMORIES = 30
+
+# --- Conversation history ---
+# How much of the first user message becomes a conversation's auto-title
+# (storage/repositories/conversations.py), shown in ui/history.py's list.
+DEFAULT_CONVERSATION_TITLE_MAX_CHARS = 60
+
 # --- Global hotkey (spec.md §26) ---
 DEFAULT_HOTKEY = "ctrl+space"
 

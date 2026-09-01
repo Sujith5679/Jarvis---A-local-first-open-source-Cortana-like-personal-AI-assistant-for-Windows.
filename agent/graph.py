@@ -38,6 +38,7 @@ import logging
 
 from config.defaults import (
     DEFAULT_GLOBAL_REQUEST_TIMEOUT_SECONDS,
+    DEFAULT_MAX_INJECTED_MEMORIES,
     DEFAULT_MAX_TOOL_STEPS,
 )
 from config.settings import Settings, get_settings
@@ -47,12 +48,14 @@ from llm.manager import LLMManager
 from security.audit import log_event
 from security.permissions import check_permission
 from storage.repositories import conversations as conv_repo
+from storage.repositories import memories as memories_repo
 from storage.repositories import usage as usage_repo
 from tools import (
     file_listing,
     file_reader,
     file_search,
     file_writer,
+    memory,
     notes,
     reminders,
     tasks,
@@ -78,6 +81,7 @@ def build_default_tool_registry() -> ToolRegistry:
     file_reader.register(registry)
     file_listing.register(registry)
     file_writer.register(registry)
+    memory.register(registry)
     notes.register(registry)
     tasks.register(registry)
     reminders.register(registry)
@@ -166,6 +170,8 @@ def _summarize_confirmed_result(tool_name: str, arguments: dict, result: dict) -
         return f"Done — opened {result.get('path')}."
     if tool_name == "lock_system":
         return "Done — locked the system."
+    if tool_name == "forget_fact":
+        return f"Done — forgot memory #{arguments.get('memory_id')}."
     return f"Done — {tool_name} completed: {result}"
 
 
@@ -317,7 +323,10 @@ class Agent:
         conv_repo.add_message(conversation_id, "user", state["user_message"])
 
         history = conv_repo.get_messages(conversation_id, limit=MAX_HISTORY_MESSAGES)
-        llm_messages = [{"role": "system", "content": build_system_prompt(self.settings)}]
+        memories = memories_repo.list_memories(limit=DEFAULT_MAX_INJECTED_MEMORIES)
+        llm_messages = [
+            {"role": "system", "content": build_system_prompt(self.settings, memories)}
+        ]
         llm_messages += conv_repo.to_llm_messages(history)
 
         try:

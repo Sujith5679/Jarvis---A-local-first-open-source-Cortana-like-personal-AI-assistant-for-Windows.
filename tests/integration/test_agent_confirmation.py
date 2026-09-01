@@ -252,6 +252,47 @@ async def test_lock_system_pauses_for_confirmation(real_db, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_forget_fact_pauses_for_confirmation_without_deleting(real_db):
+    from storage.repositories import memories as memories_repo
+
+    memory_id = memories_repo.create_memory("Keep me (for now)")
+
+    responses = [
+        LLMResponse(
+            content="",
+            provider="scripted",
+            model="x",
+            tool_calls=[_tool_call("call_1", "forget_fact", {"memory_id": memory_id})],
+        ),
+    ]
+    agent = Agent(llm_manager=LLMManager([_ScriptedProvider(responses)]), settings=real_db)
+    conv_id = conv_repo.create_conversation()
+
+    state = await agent.run_turn(conv_id, f"forget memory {memory_id}")
+
+    assert state["requires_confirmation"] is True
+    assert state["confirmation_request"]["tool"] == "forget_fact"
+    assert memories_repo.get_memory(memory_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_confirm_and_execute_approved_forgets_fact(real_db):
+    from storage.repositories import memories as memories_repo
+
+    memory_id = memories_repo.create_memory("Delete me")
+    agent = Agent(llm_manager=LLMManager([_ScriptedProvider([])]), settings=real_db)
+    conv_id = conv_repo.create_conversation()
+
+    state = await agent.confirm_and_execute(
+        conv_id, "forget_fact", {"memory_id": memory_id}, approved=True
+    )
+
+    assert state["error"] is None
+    assert memories_repo.get_memory(memory_id) is None
+    assert f"#{memory_id}" in state["response"]
+
+
+@pytest.mark.asyncio
 async def test_mcp_tool_pauses_for_confirmation_without_executing(real_db):
     """MCP-sourced tools (integrations/mcp/) go through the exact same
     agent confirmation flow as built-in HIGH-risk tools — proven here with

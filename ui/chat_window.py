@@ -57,6 +57,7 @@ from voice.stt import transcribe as stt_transcribe
 from voice.tts import SynthesisError
 from voice.tts import synthesize as tts_synthesize
 
+from ui.history import ConversationHistoryDialog
 from ui.mcp_settings import MCPServersDialog
 from ui.messages import ChatLog
 from ui.notifications import NotificationService
@@ -247,6 +248,12 @@ class ChatWindow(QMainWindow):
         self.resize(380, 540)
         self.setMinimumSize(300, 400)
 
+        chat_menu = self.menuBar().addMenu("Chat")
+        new_chat_action = chat_menu.addAction("New Chat")
+        new_chat_action.triggered.connect(self.start_new_conversation)
+        history_action = chat_menu.addAction("History...")
+        history_action.triggered.connect(self._open_history_dialog)
+
         settings_menu = self.menuBar().addMenu("Settings")
         manage_folders_action = settings_menu.addAction("Settings...")
         manage_folders_action.triggered.connect(self._open_folders_dialog)
@@ -405,6 +412,37 @@ class ChatWindow(QMainWindow):
     def _open_mcp_dialog(self) -> None:
         dialog = MCPServersDialog(self, self)
         dialog.exec()
+
+    def _open_history_dialog(self) -> None:
+        dialog = ConversationHistoryDialog(self, self)
+        dialog.exec()
+
+    # --- Conversation switching (ui/history.py) ----------------------------
+    #
+    # Both guard against an in-flight worker (a running agent turn): its
+    # succeeded/failed signal handlers append to self.chat_log using
+    # whatever conversation_id was current when it *finished*, not when it
+    # started - switching mid-turn would render a stale reply into a
+    # conversation it was never actually part of. Same reasoning as
+    # _set_thinking() disabling input during a turn, applied here too.
+
+    def start_new_conversation(self) -> None:
+        if self._worker is not None and self._worker.isRunning():
+            self.status_label.setText("Please wait for the current response to finish first.")
+            return
+        self.conversation_id = conv_repo.create_conversation()
+        self.chat_log.clear()
+        self.chat_log.append_message("assistant", "How can I help?")
+
+    def switch_to_conversation(self, conversation_id: int) -> None:
+        if self._worker is not None and self._worker.isRunning():
+            self.status_label.setText("Please wait for the current response to finish first.")
+            return
+        self.conversation_id = conversation_id
+        messages = conv_repo.get_messages(conversation_id)
+        self.chat_log.load_history(messages)
+        if not messages:
+            self.chat_log.append_message("assistant", "How can I help?")
 
     def _on_reminder_fired(self, reminder: dict) -> None:
         self.notifications.notify(
