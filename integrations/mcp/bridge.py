@@ -14,6 +14,16 @@ Claude Code itself uses for MCP tools) so they can never collide with a
 built-in tool name and so the confirmation dialog always shows which
 server a proposed action actually comes from.
 
+Two connection styles (integrations/mcp/config.py's MCPServerConfig):
+local servers are spawned as a subprocess over stdio; remote servers
+(config.is_remote — a `url`, e.g. another app's own MCP endpoint, or a
+hosted GitHub/Slack/etc. server) are reached over streamable HTTP, with an
+optional static `headers` block for auth (a bearer token/API key — full
+OAuth flows aren't supported, only static headers). Live-verified against
+a real local HTTP MCP server with a header-gated auth check: connecting
+with the right `Authorization` header listed its tools and called one
+successfully; connecting without it was correctly rejected.
+
 IMPORTANT — connections are NOT kept open across calls, on purpose. The
 first version of this module tried to (mirroring web/searxng_process.py's
 "start once, stay up for the session" choice) - live-testing caught that
@@ -97,6 +107,17 @@ class MCPConnection:
         self._client_factory = client_factory or self._default_client_factory
 
     def _default_client_factory(self) -> Client:
+        if self.config.is_remote:
+            # A bare Client(url_string) also works but offers no way to
+            # attach headers - building the transport explicitly with a
+            # custom httpx client is the (live-verified) way to get a
+            # static Authorization/API-key header onto every request.
+            from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
+
+            http_client = create_mcp_http_client(headers=self.config.headers or None)
+            transport = streamable_http_client(self.config.url, http_client=http_client)
+            return Client(transport)
+
         params = StdioServerParameters(
             command=self.config.command,
             args=self.config.args,

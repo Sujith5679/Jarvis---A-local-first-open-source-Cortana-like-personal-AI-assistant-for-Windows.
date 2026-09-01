@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
+import anyio
 import pytest
 from integrations.mcp.bridge import MCPConnection, discover_and_register
 from integrations.mcp.config import MCPServerConfig
@@ -231,3 +234,222 @@ async def test_discover_and_register_no_configured_servers_is_a_noop(monkeypatch
     reached = await discover_and_register(registry)
     assert reached == 0
     assert registry.all() == []
+
+
+# --- Remote (HTTP) servers — real streamable-HTTP protocol exchange over -
+# httpx's ASGITransport (no real socket/subprocess, but the real MCP-over-
+# HTTP wire protocol and real header handling, unlike the in-process-
+# MCPServer tests above which skip HTTP entirely). Mirrors what was
+# live-verified manually against a real local server + real network socket
+# (see module docstring): a request with the right Authorization header
+# succeeds, one without it is rejected.
+
+
+@asynccontextmanager
+async def _run_asgi_lifespan(app):
+    """Manually drives the ASGI lifespan protocol (startup/shutdown) for
+    `app`. A real server (uvicorn — what was used for the manual live
+    verification in this module's docstring) does this automatically;
+    httpx's ASGITransport deliberately does not, so a bare ASGITransport
+    call fails with "Task group is not initialized" — MCPServer's
+    streamable_http_app() initializes its session manager's task group in
+    its lifespan startup handler, same as any Starlette app with startup
+    work to do. This is the same thing the `asgi-lifespan` package's
+    LifespanManager does; written by hand here to avoid a new test-only
+    dependency."""
+    to_app_send, to_app_receive = anyio.create_memory_object_stream(1)
+    from_app_send, from_app_receive = anyio.create_memory_object_stream(4)
+
+    async def receive():
+        return await to_app_receive.receive()
+
+    async def send(message):
+        await from_app_send.send(message)
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(app, {"type": "lifespan"}, receive, send)
+        await to_app_send.send({"type": "lifespan.startup"})
+        startup_result = await from_app_receive.receive()
+        assert startup_result["type"] == "lifespan.startup.complete", startup_result
+        try:
+            yield
+        finally:
+            await to_app_send.send({"type": "lifespan.shutdown"})
+            tg.cancel_scope.cancel()
+
+
+def _make_asgi_app_with_auth(required_header: str):
+    """A real MCP server exposed over a real (in-process, ASGI) HTTP app,
+    with a hand-rolled auth check in front of it — the same shape as a
+    real hosted MCP server that gates access by a bearer token/API key.
+
+    transport_security=disabled is deliberate: MCPServer's high-level API
+    enables Host/Origin DNS-rebinding protection by default (a real,
+    separate security feature, unrelated to what this test is checking),
+    and it rejects this test's fake ASGITransport host - what's under test
+    here is JARVIS's own header-injection wiring, not the SDK's rebinding
+    protection, so it's turned off rather than fought."""
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    server = MCPServer("remote-test-server")
+
+    @server.tool()
+    def whoami(name: str) -> str:
+        return f"hello, {name}"
+
+    inner_app = server.streamable_http_app(
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    )
+
+    async def app(scope, receive, send):
+        if scope["type"] == "http":
+            headers = dict(scope.get("headers", []))
+            token = headers.get(b"authorization", b"").decode()
+            if token != required_header:
+                await send(
+                    {"type": "http.response.start", "status": 401, "headers": []}
+                )
+                await send({"type": "http.response.body", "body": b"unauthorized"})
+                return
+        await inner_app(scope, receive, send)
+
+    return app
+
+
+_ASGI_TEST_URL = "http://localhost/mcp"  # not an arbitrary host - see
+# test_remote_server_with_correct_auth_header_succeeds's discovery below:
+# MCPServer's TransportSecurityMiddleware rejects an unrecognized `Host`
+# header (real DNS-rebinding protection), so the fake base URL has to be
+# one it actually allows by default.
+
+
+def _asgi_connection(config: MCPServerConfig, app) -> MCPConnection:
+    import httpx2
+    from mcp.client.streamable_http import streamable_http_client
+
+    def client_factory():
+        http_client = httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=app),
+            base_url=_ASGI_TEST_URL,
+            headers=config.headers or None,
+        )
+        transport = streamable_http_client(_ASGI_TEST_URL, http_client=http_client)
+        return Client(transport)
+
+    return MCPConnection(config, client_factory=client_factory)
+
+
+@pytest.mark.asyncio
+async def test_remote_server_with_correct_auth_header_succeeds():
+    app = _make_asgi_app_with_auth("Bearer secret-token")
+    config = MCPServerConfig(
+        name="remote", url="http://test/mcp", headers={"Authorization": "Bearer secret-token"}
+    )
+    conn = _asgi_connection(config, app)
+
+    async with _run_asgi_lifespan(app):
+        tools = await conn.list_tools()
+        assert {t.name for t in tools} == {"whoami"}
+
+        handler = conn.make_handler("whoami")
+        result = await handler(name="jarvis")
+        assert result == {"result": "hello, jarvis"}
+
+
+@pytest.mark.asyncio
+async def test_remote_server_without_auth_header_is_rejected():
+    app = _make_asgi_app_with_auth("Bearer secret-token")
+    config = MCPServerConfig(name="remote", url="http://test/mcp", headers={})
+    conn = _asgi_connection(config, app)
+
+    with pytest.raises(Exception):  # noqa: B017 - transport-level failure, exact type varies
+        await conn.list_tools()
+
+
+@pytest.mark.asyncio
+async def test_remote_server_with_wrong_auth_header_is_rejected():
+    app = _make_asgi_app_with_auth("Bearer secret-token")
+    config = MCPServerConfig(
+        name="remote", url="http://test/mcp", headers={"Authorization": "Bearer wrong"}
+    )
+    conn = _asgi_connection(config, app)
+
+    with pytest.raises(Exception):  # noqa: B017 - transport-level failure, exact type varies
+        await conn.list_tools()
+
+
+@pytest.mark.asyncio
+async def test_discover_and_register_works_for_a_remote_server():
+    app = _make_asgi_app_with_auth("Bearer secret-token")
+    config = MCPServerConfig(
+        name="remote", url="http://test/mcp", headers={"Authorization": "Bearer secret-token"}
+    )
+    registry = ToolRegistry()
+
+    async with _run_asgi_lifespan(app):
+        reached = await discover_and_register(
+            registry, configs=[config], connection_factory=lambda cfg: _asgi_connection(cfg, app)
+        )
+
+        assert reached == 1
+        tool = registry.get("mcp__remote__whoami")
+        assert tool is not None
+        assert tool.metadata.requires_confirmation is True
+        result = await tool.execute(name="world")
+        assert result == {"result": "hello, world"}
+
+
+# --- _default_client_factory(): the actual production wiring for a config
+# with no client_factory override (what real usage goes through) --------
+
+
+def test_default_client_factory_builds_stdio_client_for_local_config():
+    config = MCPServerConfig(
+        name="local", command="python", args=["-u", "server.py"], env={"A": "1"}
+    )
+    conn = MCPConnection(config)
+
+    client = conn._default_client_factory()
+    from mcp import StdioServerParameters
+
+    assert isinstance(client.server, StdioServerParameters)
+    assert client.server.command == "python"
+    assert client.server.args == ["-u", "server.py"]
+    assert client.server.env == {"A": "1"}
+
+
+def test_default_client_factory_builds_http_transport_for_remote_config(monkeypatch):
+    calls = {}
+    # A plain object, deliberately NOT a str/StdioServerParameters/server -
+    # Client.__post_init__ special-cases those types (a bare str is treated
+    # as a URL to build its own default transport for), so returning one
+    # here would test the wrong code path in mcp.Client itself instead of
+    # confirming JARVIS passed the right opaque transport through.
+    sentinel_transport = object()
+
+    def fake_create_mcp_http_client(headers=None):
+        calls["headers"] = headers
+        return "fake-http-client"
+
+    def fake_streamable_http_client(url, *, http_client=None):
+        calls["url"] = url
+        calls["http_client"] = http_client
+        return sentinel_transport
+
+    monkeypatch.setattr(
+        "mcp.client.streamable_http.create_mcp_http_client", fake_create_mcp_http_client
+    )
+    monkeypatch.setattr(
+        "mcp.client.streamable_http.streamable_http_client", fake_streamable_http_client
+    )
+
+    config = MCPServerConfig(
+        name="remote", url="https://example.com/mcp", headers={"Authorization": "Bearer x"}
+    )
+    conn = MCPConnection(config)
+    client = conn._default_client_factory()
+
+    assert calls["headers"] == {"Authorization": "Bearer x"}
+    assert calls["url"] == "https://example.com/mcp"
+    assert calls["http_client"] == "fake-http-client"
+    assert client.server is sentinel_transport

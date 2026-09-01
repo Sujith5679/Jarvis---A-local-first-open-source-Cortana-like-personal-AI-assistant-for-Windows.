@@ -58,11 +58,13 @@ def known_secrets_from_settings() -> list[str | None]:
         s.google_client_secret,
     ]
     # MCP servers (integrations/mcp/) routinely carry real tokens in their
-    # env block (a GitHub PAT, a Slack bot token, ...) - an MCP tool's own
-    # result/error text could echo one back, same risk as any provider
-    # error body, so these need the same scrubbing.
+    # env block (local servers) or headers block (remote servers - a
+    # bearer token/API key) - an MCP tool's own result/error text could
+    # echo one back, same risk as any provider error body, so both need
+    # the same scrubbing.
     from integrations.mcp.config import load_all_mcp_servers
 
     for server in load_all_mcp_servers():
         secrets.extend(server.env.values())
+        secrets.extend(server.headers.values())
     return secrets

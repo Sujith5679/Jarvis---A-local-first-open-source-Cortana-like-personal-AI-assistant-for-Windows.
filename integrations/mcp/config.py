@@ -6,9 +6,21 @@ for those can mostly be reused here — plus an `enabled` flag (defaults
 true) so a server can be kept defined but temporarily switched off without
 deleting it, same idea as `indexed_folders.enabled`.
 
-Gitignored, same as `.env` (see `.gitignore`) — a server's `env` block
-routinely carries real API tokens (a GitHub PAT, a Slack bot token, ...).
-`security/secrets.py`'s `known_secrets_from_settings()` includes these so
+Two connection styles per server, exactly one required:
+- Local (stdio): `command` (+ optional `args`, `env`) — JARVIS spawns it
+  as a subprocess, e.g. an `npx`-run filesystem/git/sqlite server.
+- Remote (HTTP): `url` (+ optional `headers`) — JARVIS connects to an
+  already-running server over the network, e.g. another app's own MCP
+  endpoint, or a hosted GitHub/Slack/etc. MCP server. `headers` is where a
+  static bearer token/API key goes (`{"Authorization": "Bearer ..."}`) —
+  live-verified against a real local HTTP MCP server with a header-gated
+  auth check (integrations/mcp/bridge.py's module docstring has the
+  details). Full OAuth flows aren't supported — only static headers.
+
+Gitignored, same as `.env` (see `.gitignore`) — a server's `env`/`headers`
+block routinely carries a real credential (a GitHub PAT, a Slack bot
+token, a bearer token for a remote server, ...).
+`security/secrets.py`'s `known_secrets_from_settings()` includes both so
 they get redacted from audit logs/errors the same as any other secret.
 `mcp_servers.example.json` is the git-tracked template, with blank/example
 values only — same split as `.env`/`.env.example`.
@@ -39,10 +51,45 @@ CONFIG_PATH = Path("mcp_servers.json")
 @dataclass
 class MCPServerConfig:
     name: str
-    command: str
+    command: str | None = None
     args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
+    url: str | None = None
+    headers: dict[str, str] = field(default_factory=dict)
     enabled: bool = True
+
+    @property
+    def is_remote(self) -> bool:
+        return bool(self.url)
+
+
+def _parse_entry(name: str, entry: object) -> MCPServerConfig | None:
+    if not isinstance(entry, dict):
+        logger.warning("Skipping invalid MCP server entry %r (not an object)", name)
+        return None
+
+    has_command = bool(entry.get("command"))
+    has_url = bool(entry.get("url"))
+    if has_command and has_url:
+        logger.warning(
+            "Skipping MCP server entry %r: has both 'command' and 'url' - pick one "
+            "(local via 'command', or remote via 'url')",
+            name,
+        )
+        return None
+    if not has_command and not has_url:
+        logger.warning("Skipping invalid MCP server entry %r (needs 'command' or 'url')", name)
+        return None
+
+    return MCPServerConfig(
+        name=name,
+        command=entry.get("command") or None,
+        args=[str(a) for a in entry.get("args", [])],
+        env={str(k): str(v) for k, v in entry.get("env", {}).items()},
+        url=entry.get("url") or None,
+        headers={str(k): str(v) for k, v in entry.get("headers", {}).items()},
+        enabled=bool(entry.get("enabled", True)),
+    )
 
 
 def load_all_mcp_servers(path: Path | None = None) -> list[MCPServerConfig]:
@@ -69,18 +116,9 @@ def load_all_mcp_servers(path: Path | None = None) -> list[MCPServerConfig]:
 
     configs: list[MCPServerConfig] = []
     for name, entry in servers.items():
-        if not isinstance(entry, dict) or not entry.get("command"):
-            logger.warning("Skipping invalid MCP server entry %r (missing 'command')", name)
-            continue
-        configs.append(
-            MCPServerConfig(
-                name=name,
-                command=entry["command"],
-                args=[str(a) for a in entry.get("args", [])],
-                env={str(k): str(v) for k, v in entry.get("env", {}).items()},
-                enabled=bool(entry.get("enabled", True)),
-            )
-        )
+        config = _parse_entry(name, entry)
+        if config is not None:
+            configs.append(config)
     return configs
 
 
@@ -99,9 +137,11 @@ def save_mcp_servers(configs: list[MCPServerConfig], path: Path | None = None) -
     data = {
         "mcpServers": {
             c.name: {
-                "command": c.command,
+                "command": c.command or "",
                 "args": c.args,
                 "env": c.env,
+                "url": c.url or "",
+                "headers": c.headers,
                 "enabled": c.enabled,
             }
             for c in configs

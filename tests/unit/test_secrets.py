@@ -58,3 +58,32 @@ def test_known_secrets_includes_mcp_server_env_values(real_db, monkeypatch):
 
     scrubbed = scrub_secrets("token was ghp_supersecrettoken123, rejected", secrets)
     assert "ghp_supersecrettoken123" not in scrubbed
+
+
+def test_known_secrets_includes_mcp_remote_server_header_values(real_db, monkeypatch):
+    """A remote MCP server's headers block (a bearer token/API key) must be
+    scrubbed the same as a local server's env block."""
+    config_path = real_db.data_dir / "mcp_servers.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "hosted": {
+                        "url": "https://example.com/mcp",
+                        "headers": {"Authorization": "Bearer sk-remote-secret-456"},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("integrations.mcp.config.CONFIG_PATH", config_path)
+
+    # The full header *value* is what gets stored/scrubbed (env/headers are
+    # {name: value} dicts, and it's the value that's the credential) -
+    # "Bearer sk-remote-secret-456" here, not just the bare token.
+    secrets = known_secrets_from_settings()
+    assert "Bearer sk-remote-secret-456" in secrets
+
+    scrubbed = scrub_secrets("auth failed with header Bearer sk-remote-secret-456", secrets)
+    assert "sk-remote-secret-456" not in scrubbed

@@ -68,8 +68,16 @@ def test_disabled_server_excluded_from_load_mcp_servers(tmp_path):
     assert all_servers[0].enabled is False
 
 
-def test_entry_missing_command_is_skipped(tmp_path):
+def test_entry_missing_command_and_url_is_skipped(tmp_path):
     path = _write(tmp_path, {"mcpServers": {"broken": {"args": ["x"]}}})
+    assert load_mcp_servers(path) == []
+
+
+def test_entry_with_both_command_and_url_is_skipped(tmp_path):
+    path = _write(
+        tmp_path,
+        {"mcpServers": {"ambiguous": {"command": "npx", "url": "https://example.com/mcp"}}},
+    )
     assert load_mcp_servers(path) == []
 
 
@@ -158,6 +166,62 @@ def test_save_writes_valid_json_matching_documented_shape(tmp_path):
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data == {
         "mcpServers": {
-            "x": {"command": "npx", "args": ["-y"], "env": {"K": "V"}, "enabled": False}
+            "x": {
+                "command": "npx",
+                "args": ["-y"],
+                "env": {"K": "V"},
+                "url": "",
+                "headers": {},
+                "enabled": False,
+            }
         }
     }
+
+
+# --- Remote (URL) servers -------------------------------------------------
+
+
+def test_loads_valid_remote_server(tmp_path):
+    path = _write(
+        tmp_path,
+        {
+            "mcpServers": {
+                "hosted": {
+                    "url": "https://example.com/mcp",
+                    "headers": {"Authorization": "Bearer secret-token"},
+                }
+            }
+        },
+    )
+    servers = load_mcp_servers(path)
+    assert len(servers) == 1
+    s = servers[0]
+    assert s.name == "hosted"
+    assert s.url == "https://example.com/mcp"
+    assert s.headers == {"Authorization": "Bearer secret-token"}
+    assert s.command is None
+    assert s.is_remote is True
+
+
+def test_local_server_is_remote_is_false(tmp_path):
+    path = _write(tmp_path, {"mcpServers": {"local": {"command": "python"}}})
+    assert load_mcp_servers(path)[0].is_remote is False
+
+
+def test_remote_server_headers_default_to_empty(tmp_path):
+    path = _write(tmp_path, {"mcpServers": {"hosted": {"url": "https://example.com/mcp"}}})
+    assert load_mcp_servers(path)[0].headers == {}
+
+
+def test_remote_save_then_load_round_trips(tmp_path):
+    path = tmp_path / "mcp_servers.json"
+    configs = [
+        MCPServerConfig(
+            name="hosted",
+            url="https://example.com/mcp",
+            headers={"Authorization": "Bearer secret"},
+            enabled=True,
+        ),
+    ]
+    save_mcp_servers(configs, path)
+    assert load_all_mcp_servers(path) == configs

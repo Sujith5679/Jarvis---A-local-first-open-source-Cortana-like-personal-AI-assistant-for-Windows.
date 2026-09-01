@@ -1,9 +1,10 @@
 """MCP Servers settings dialog — add/edit/remove `mcp_servers.json` entries
 and reconnect live (integrations/mcp/).
 
-Two dialogs: `MCPServerEditDialog` (one server's fields — name, command,
-args, env, enabled) and `MCPServersDialog` (the list + Add/Edit/Remove/
-Reconnect Now, opened from ChatWindow's Settings menu).
+Two dialogs: `MCPServerEditDialog` (one server's fields, either local —
+command/args/env — or remote — url/headers) and `MCPServersDialog` (the
+list + Add/Edit/Remove/Reconnect Now, opened from ChatWindow's Settings
+menu).
 
 Editing the config file alone doesn't affect a running JARVIS — the agent's
 tool registry only reflects what integrations/mcp/bridge.py discovered at
@@ -22,6 +23,7 @@ from integrations.mcp.config import (
     save_mcp_servers,
 )
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QDialog,
     QHBoxLayout,
@@ -31,17 +33,20 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QRadioButton,
     QVBoxLayout,
+    QWidget,
 )
 
 logger = logging.getLogger("jarvis.ui.mcp_settings")
 
 
-def _parse_env_lines(text: str) -> tuple[dict[str, str], list[str]]:
-    """Parses "KEY=VALUE" per line. Returns (env dict, warnings) — a
-    malformed line is skipped and reported, never a hard error, so one typo
-    doesn't block saving the rest of the form."""
-    env: dict[str, str] = {}
+def _parse_kv_lines(text: str) -> tuple[dict[str, str], list[str]]:
+    """Parses "KEY=VALUE" per line — shared by env vars (local servers) and
+    HTTP headers (remote servers). Returns (dict, warnings) — a malformed
+    line is skipped and reported, never a hard error, so one typo doesn't
+    block saving the rest of the form."""
+    result: dict[str, str] = {}
     warnings: list[str] = []
     for raw_line in text.splitlines():
         line = raw_line.strip()
@@ -55,8 +60,13 @@ def _parse_env_lines(text: str) -> tuple[dict[str, str], list[str]]:
         if not key:
             warnings.append(f"Ignored (empty key): {line!r}")
             continue
-        env[key] = value.strip()
-    return env, warnings
+        result[key] = value.strip()
+    return result, warnings
+
+
+# Kept as the old name too, since existing tests/callers reference it for
+# the env-var case specifically — behavior is identical either way.
+_parse_env_lines = _parse_kv_lines
 
 
 class MCPServerEditDialog(QDialog):
@@ -68,7 +78,7 @@ class MCPServerEditDialog(QDialog):
         super().__init__(parent)
         self._other_names = other_names  # names already used by *other* servers
         self.setWindowTitle("Add MCP Server" if existing is None else "Edit MCP Server")
-        self.resize(440, 420)
+        self.resize(460, 520)
 
         layout = QVBoxLayout(self)
 
@@ -77,20 +87,63 @@ class MCPServerEditDialog(QDialog):
         self.name_field.setPlaceholderText("e.g. filesystem")
         layout.addWidget(self.name_field)
 
-        layout.addWidget(QLabel("Command", self))
-        self.command_field = QLineEdit(self)
+        type_row = QHBoxLayout()
+        self.local_radio = QRadioButton("Local (runs a command)", self)
+        self.remote_radio = QRadioButton("Remote (URL)", self)
+        self.local_radio.setChecked(True)
+        type_group = QButtonGroup(self)
+        type_group.addButton(self.local_radio)
+        type_group.addButton(self.remote_radio)
+        type_row.addWidget(self.local_radio)
+        type_row.addWidget(self.remote_radio)
+        layout.addLayout(type_row)
+
+        # --- Local fields ---
+        self.local_group = QWidget(self)
+        local_layout = QVBoxLayout(self.local_group)
+        local_layout.setContentsMargins(0, 0, 0, 0)
+
+        local_layout.addWidget(QLabel("Command", self.local_group))
+        self.command_field = QLineEdit(self.local_group)
         self.command_field.setPlaceholderText("e.g. npx")
-        layout.addWidget(self.command_field)
+        local_layout.addWidget(self.command_field)
 
-        layout.addWidget(QLabel("Arguments (one per line)", self))
-        self.args_field = QPlainTextEdit(self)
-        self.args_field.setPlaceholderText("-y\n@modelcontextprotocol/server-filesystem\nC:\\Users\\you\\Documents")
-        layout.addWidget(self.args_field)
+        local_layout.addWidget(QLabel("Arguments (one per line)", self.local_group))
+        self.args_field = QPlainTextEdit(self.local_group)
+        self.args_field.setPlaceholderText(
+            "-y\n@modelcontextprotocol/server-filesystem\nC:\\Users\\you\\Documents"
+        )
+        local_layout.addWidget(self.args_field)
 
-        layout.addWidget(QLabel("Environment variables (KEY=VALUE, one per line)", self))
-        self.env_field = QPlainTextEdit(self)
+        local_layout.addWidget(
+            QLabel("Environment variables (KEY=VALUE, one per line)", self.local_group)
+        )
+        self.env_field = QPlainTextEdit(self.local_group)
         self.env_field.setPlaceholderText("GITHUB_TOKEN=ghp_...")
-        layout.addWidget(self.env_field)
+        local_layout.addWidget(self.env_field)
+        layout.addWidget(self.local_group)
+
+        # --- Remote fields ---
+        self.remote_group = QWidget(self)
+        remote_layout = QVBoxLayout(self.remote_group)
+        remote_layout.setContentsMargins(0, 0, 0, 0)
+
+        remote_layout.addWidget(QLabel("URL", self.remote_group))
+        self.url_field = QLineEdit(self.remote_group)
+        self.url_field.setPlaceholderText("https://example.com/mcp")
+        remote_layout.addWidget(self.url_field)
+
+        remote_layout.addWidget(
+            QLabel("Headers (KEY=VALUE, one per line — e.g. auth)", self.remote_group)
+        )
+        self.headers_field = QPlainTextEdit(self.remote_group)
+        self.headers_field.setPlaceholderText("Authorization=Bearer sk-...")
+        remote_layout.addWidget(self.headers_field)
+        layout.addWidget(self.remote_group)
+        self.remote_group.setVisible(False)
+
+        self.local_radio.toggled.connect(self.local_group.setVisible)
+        self.remote_radio.toggled.connect(self.remote_group.setVisible)
 
         self.enabled_checkbox = QCheckBox("Enabled", self)
         self.enabled_checkbox.setChecked(True)
@@ -114,40 +167,61 @@ class MCPServerEditDialog(QDialog):
 
         if existing is not None:
             self.name_field.setText(existing.name)
-            self.command_field.setText(existing.command)
-            self.args_field.setPlainText("\n".join(existing.args))
-            self.env_field.setPlainText(
-                "\n".join(f"{k}={v}" for k, v in existing.env.items())
-            )
+            if existing.is_remote:
+                self.remote_radio.setChecked(True)
+                self.url_field.setText(existing.url or "")
+                self.headers_field.setPlainText(
+                    "\n".join(f"{k}={v}" for k, v in existing.headers.items())
+                )
+            else:
+                self.local_radio.setChecked(True)
+                self.command_field.setText(existing.command or "")
+                self.args_field.setPlainText("\n".join(existing.args))
+                self.env_field.setPlainText(
+                    "\n".join(f"{k}={v}" for k, v in existing.env.items())
+                )
             self.enabled_checkbox.setChecked(existing.enabled)
 
     def _on_save(self) -> None:
         name = self.name_field.text().strip()
-        command = self.command_field.text().strip()
-
         if not name:
             self.error_label.setText("Name is required.")
             return
         if name in self._other_names:
             self.error_label.setText(f"A server named {name!r} already exists.")
             return
-        if not command:
-            self.error_label.setText("Command is required.")
-            return
 
-        args = [line.strip() for line in self.args_field.toPlainText().splitlines() if line.strip()]
-        env, warnings = _parse_env_lines(self.env_field.toPlainText())
-        if warnings:
-            self.error_label.setText("; ".join(warnings))
-            return
-
-        self.result_config = MCPServerConfig(
-            name=name,
-            command=command,
-            args=args,
-            env=env,
-            enabled=self.enabled_checkbox.isChecked(),
-        )
+        if self.remote_radio.isChecked():
+            url = self.url_field.text().strip()
+            if not url:
+                self.error_label.setText("URL is required for a remote server.")
+                return
+            headers, warnings = _parse_kv_lines(self.headers_field.toPlainText())
+            if warnings:
+                self.error_label.setText("; ".join(warnings))
+                return
+            self.result_config = MCPServerConfig(
+                name=name, url=url, headers=headers, enabled=self.enabled_checkbox.isChecked()
+            )
+        else:
+            command = self.command_field.text().strip()
+            if not command:
+                self.error_label.setText("Command is required for a local server.")
+                return
+            args = [
+                line.strip() for line in self.args_field.toPlainText().splitlines() if line.strip()
+            ]
+            env, warnings = _parse_kv_lines(self.env_field.toPlainText())
+            if warnings:
+                self.error_label.setText("; ".join(warnings))
+                return
+            self.result_config = MCPServerConfig(
+                name=name,
+                command=command,
+                args=args,
+                env=env,
+                enabled=self.enabled_checkbox.isChecked(),
+            )
         self.accept()
 
 
@@ -206,7 +280,8 @@ class MCPServersDialog(QDialog):
         self.server_list.clear()
         for config in self._configs:
             status = "enabled" if config.enabled else "disabled"
-            self.server_list.addItem(f"{config.name}  ({status}) — {config.command}")
+            kind = f"remote: {config.url}" if config.is_remote else f"local: {config.command}"
+            self.server_list.addItem(f"{config.name}  ({status}) — {kind}")
 
     def _selected_config(self) -> MCPServerConfig | None:
         row = self.server_list.currentRow()
