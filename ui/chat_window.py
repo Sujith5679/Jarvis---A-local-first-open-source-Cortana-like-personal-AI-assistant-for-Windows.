@@ -37,15 +37,17 @@ import logging
 from agent.graph import Agent, build_agent
 from agent.state import AgentState
 from app.bootstrap import BootstrapContext
-from PySide6.QtCore import QThread, Signal
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtCore import QSettings, QThread, Signal
+from PySide6.QtGui import QActionGroup, QCloseEvent
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -62,7 +64,17 @@ from ui.mcp_settings import MCPServersDialog
 from ui.messages import ChatLog
 from ui.notifications import NotificationService
 from ui.settings import FoldersDialog
+from ui.theme import (
+    SETTINGS_APP,
+    SETTINGS_ORG,
+    VALID_THEME_MODES,
+    load_theme_mode,
+    resolve_theme,
+    save_theme_mode,
+)
 from ui.usage_dialog import UsageDialog
+
+_GEOMETRY_SETTINGS_KEY = "ui/chat_window_geometry"
 
 logger = logging.getLogger("jarvis.ui.chat_window")
 
@@ -245,33 +257,54 @@ class ChatWindow(QMainWindow):
         self.tray = None
 
         self.setWindowTitle("JARVIS")
-        self.resize(380, 540)
+        # A previous session's saved size/position (see closeEvent) wins if
+        # present - makes the popup behave like something docked in place
+        # rather than reappearing wherever Windows feels like each launch.
         self.setMinimumSize(300, 400)
+        saved_geometry = QSettings(SETTINGS_ORG, SETTINGS_APP).value(_GEOMETRY_SETTINGS_KEY)
+        restored = False
+        if saved_geometry:
+            try:
+                restored = bool(self.restoreGeometry(saved_geometry))
+            except (TypeError, ValueError):
+                # A saved value in an unexpected shape (e.g. a stale/foreign
+                # registry entry) should degrade to the default size, never
+                # crash startup over a cosmetic preference.
+                restored = False
+        if not restored:
+            self.resize(380, 540)
 
-        chat_menu = self.menuBar().addMenu("Chat")
-        new_chat_action = chat_menu.addAction("New Chat")
-        new_chat_action.triggered.connect(self.start_new_conversation)
-        history_action = chat_menu.addAction("History...")
-        history_action.triggered.connect(self._open_history_dialog)
-
-        settings_menu = self.menuBar().addMenu("Settings")
-        manage_folders_action = settings_menu.addAction("Settings...")
-        manage_folders_action.triggered.connect(self._open_folders_dialog)
-        usage_action = settings_menu.addAction("Usage && Costs...")
-        usage_action.triggered.connect(self._open_usage_dialog)
-        mcp_action = settings_menu.addAction("MCP Servers...")
-        mcp_action.triggered.connect(self._open_mcp_dialog)
+        self.theme = resolve_theme()
+        # No self.menuBar() anywhere below - QMainWindow only creates one
+        # lazily on first access, and the compact kebab menu (top_bar,
+        # below) replaces what the native menu bar used to hold.
 
         central = QWidget(self)
         layout = QVBoxLayout(central)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self.chat_log = ChatLog(central)
+        # --- Compact top bar: title + one kebab menu instead of a permanent
+        # native menu bar (spec.md §25 wants this to read as a small chat
+        # popup, not a desktop app with its own menu strip). ---
+        self.top_bar = QWidget(central)
+        top_bar_layout = QHBoxLayout(self.top_bar)
+        top_bar_layout.setContentsMargins(10, 6, 6, 6)
+        self.title_label = QLabel("JARVIS", self.top_bar)
+        top_bar_layout.addWidget(self.title_label, stretch=1)
+
+        self.menu_button = QToolButton(self.top_bar)
+        self.menu_button.setText("⋮")  # vertical ellipsis
+        self.menu_button.setToolTip("Menu")
+        self.menu_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.menu_button.setMenu(self._build_menu())
+        top_bar_layout.addWidget(self.menu_button)
+        layout.addWidget(self.top_bar)
+
+        self.chat_log = ChatLog(central, theme=self.theme)
         layout.addWidget(self.chat_log, stretch=1)
 
         self.status_label = QLabel("", central)
-        self.status_label.setStyleSheet("color:#9ca3af; font-style:italic; padding: 2px 8px;")
         layout.addWidget(self.status_label)
 
         input_row = QWidget(central)
@@ -305,6 +338,7 @@ class ChatWindow(QMainWindow):
 
         layout.addWidget(input_row)
         self.setCentralWidget(central)
+        self._apply_theme_to_chrome()
 
         self.chat_log.append_message("assistant", "How can I help?")
 
@@ -321,8 +355,89 @@ class ChatWindow(QMainWindow):
         # launches a fresh instance the next time it's needed. Nothing to
         # tear down for MCP here — no connection is ever kept open between
         # calls (integrations/mcp/bridge.py's module docstring explains why).
+        QSettings(SETTINGS_ORG, SETTINGS_APP).setValue(_GEOMETRY_SETTINGS_KEY, self.saveGeometry())
         self.scheduler.stop()
         super().closeEvent(event)
+
+    # --- Menu / theme (ui/theme.py) -----------------------------------------
+
+    def _build_menu(self) -> QMenu:
+        menu = QMenu(self)
+
+        new_chat_action = menu.addAction("New Chat")
+        new_chat_action.triggered.connect(self.start_new_conversation)
+        history_action = menu.addAction("History...")
+        history_action.triggered.connect(self._open_history_dialog)
+
+        menu.addSeparator()
+        settings_action = menu.addAction("Settings...")
+        settings_action.triggered.connect(self._open_folders_dialog)
+        usage_action = menu.addAction("Usage && Costs...")
+        usage_action.triggered.connect(self._open_usage_dialog)
+        mcp_action = menu.addAction("MCP Servers...")
+        mcp_action.triggered.connect(self._open_mcp_dialog)
+
+        menu.addSeparator()
+        theme_menu = menu.addMenu("Theme")
+        theme_group = QActionGroup(theme_menu)
+        theme_group.setExclusive(True)
+        current_mode = load_theme_mode()
+        for mode in VALID_THEME_MODES:
+            action = theme_menu.addAction(mode.capitalize())
+            action.setCheckable(True)
+            action.setChecked(mode == current_mode)
+            action.triggered.connect(lambda _checked, m=mode: self._on_theme_selected(m))
+            theme_group.addAction(action)
+        # Keep a live Python reference - nothing else holds one once
+        # _build_menu() returns, and a garbage-collected QActionGroup can
+        # take its actions' exclusivity behavior down with it.
+        self._theme_action_group = theme_group
+
+        return menu
+
+    def _on_theme_selected(self, mode: str) -> None:
+        save_theme_mode(mode)
+        self.theme = resolve_theme(mode)
+        self._apply_theme_to_chrome()
+        self.chat_log.apply_theme(self.theme)
+        # Already-rendered bubbles keep the old theme's colors baked into
+        # their HTML (see ChatLog.apply_theme's docstring) - re-render the
+        # current conversation from storage so switching themes is never
+        # half-applied to what's on screen. The opening greeting is never
+        # persisted (same as start_new_conversation()/switch_to_conversation()),
+        # so an empty result needs the same fallback they use, or switching
+        # themes right after startup would wipe it off screen.
+        messages = conv_repo.get_messages(self.conversation_id)
+        self.chat_log.load_history(messages)
+        if not messages:
+            self.chat_log.append_message("assistant", "How can I help?")
+        # Rebuild the menu so the new mode's checkmark shows next time it opens.
+        self.menu_button.setMenu(self._build_menu())
+
+    def _apply_theme_to_chrome(self) -> None:
+        """Styles everything except ChatLog (which manages its own
+        stylesheet via apply_theme()) - the window background, top bar,
+        status line, and input row."""
+        t = self.theme
+        self.setStyleSheet(f"QMainWindow {{ background: {t.window_bg}; }}")
+        self.top_bar.setStyleSheet(
+            f"background: {t.surface_bg}; border-bottom: 1px solid {t.border};"
+        )
+        self.title_label.setStyleSheet(f"color: {t.text}; font-weight: 600; padding-left: 2px;")
+        self.menu_button.setStyleSheet(f"color: {t.muted_text}; border: none; font-size: 16px;")
+        self.status_label.setStyleSheet(
+            f"color: {t.status_text}; font-style: italic; padding: 2px 8px; "
+            f"background: {t.window_bg};"
+        )
+        self.input_field.setStyleSheet(
+            f"background: {t.input_bg}; color: {t.text}; border: 1px solid {t.border}; "
+            f"border-radius: 4px; padding: 4px 6px;"
+        )
+        self.send_button.setStyleSheet(
+            f"background: {t.accent}; color: #ffffff; border: none; border-radius: 4px;"
+        )
+        if self._recorder is not None and not getattr(self, "_mic_recording", False):
+            self.mic_button.setStyleSheet("")
 
     # --- MCP (integrations/mcp/) ------------------------------------------
     #
@@ -486,7 +601,9 @@ class ChatWindow(QMainWindow):
         if state.get("error"):
             self.chat_log.append_message("error", f"Sorry, I ran into a problem: {state['error']}")
         else:
-            self.chat_log.append_message("assistant", state.get("response") or "")
+            self.chat_log.append_message(
+                "assistant", state.get("response") or "", state.get("citations")
+            )
 
     def _on_turn_failed(self, message: str) -> None:
         self._set_thinking(False)
@@ -507,10 +624,18 @@ class ChatWindow(QMainWindow):
         self.input_field.setEnabled(False)
         self.send_button.setEnabled(False)
         self.status_label.setText("Listening...")
+        # Visual "Listening" state (spec.md §25's required UI states) - the
+        # mic button otherwise looks identical whether idle or recording.
+        self._mic_recording = True
+        self.mic_button.setStyleSheet(
+            f"background: {self.theme.error_text}; border-radius: 4px;"
+        )
 
     def _on_mic_released(self) -> None:
         assert self._recorder is not None
         audio = self._recorder.stop()
+        self._mic_recording = False
+        self.mic_button.setStyleSheet("")
         self.status_label.setText("Transcribing...")
 
         self._worker = VoiceTurnWorker(
