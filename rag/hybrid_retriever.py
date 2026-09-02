@@ -6,9 +6,11 @@ configurable weights. Every parameter here is a tunable
 (config.defaults / future retrieval-eval-driven overrides), never hard-coded
 at the call site.
 
-This module is the stable interface a reranker (V2, `rag/reranker.py`) slots
-into later — it would take `retrieve()`'s candidate list and reorder it,
-without any caller of `HybridRetriever.retrieve()` needing to change.
+An optional `rag/reranker.py` cross-encoder can slot in on top of that fused
+ranking — it takes `retrieve()`'s top candidates and reorders them, without
+any caller of `HybridRetriever.retrieve()` needing to change (pass a
+`Reranker` into the constructor, or none at all to skip reranking entirely,
+which is what every existing caller/test that doesn't pass one still does).
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from config.defaults import (
     DEFAULT_FINAL_TOP_K,
     DEFAULT_KEYWORD_WEIGHT,
     DEFAULT_MINIMUM_SCORE,
+    DEFAULT_RERANK_CANDIDATE_POOL,
     DEFAULT_SEMANTIC_WEIGHT,
     DEFAULT_TOP_K_KEYWORD,
     DEFAULT_TOP_K_VECTOR,
@@ -28,6 +31,7 @@ from storage.database import get_connection
 
 from rag import keyword_store
 from rag.embeddings import EmbeddingProvider, get_default_embedding_provider
+from rag.reranker import Reranker
 from rag.vector_store import VectorStore, get_default_vector_store
 
 
@@ -44,6 +48,7 @@ class RetrievedChunk:
     section: str | None = None
     keyword_score: float | None = None
     semantic_score: float | None = None
+    rerank_score: float | None = None
 
 
 def _normalize(scores: dict[int, float], *, invert: bool = False) -> dict[int, float]:
@@ -78,9 +83,15 @@ def _fetch_chunk_metadata(ids: list[int], conn: sqlite3.Connection) -> dict[int,
 
 
 class HybridRetriever:
-    def __init__(self, embedding_provider: EmbeddingProvider, vector_store: VectorStore) -> None:
+    def __init__(
+        self,
+        embedding_provider: EmbeddingProvider,
+        vector_store: VectorStore,
+        reranker: Reranker | None = None,
+    ) -> None:
         self.embedding_provider = embedding_provider
         self.vector_store = vector_store
+        self.reranker = reranker
 
     def retrieve(
         self,
@@ -92,6 +103,8 @@ class HybridRetriever:
         top_k_vector: int = DEFAULT_TOP_K_VECTOR,
         final_top_k: int = DEFAULT_FINAL_TOP_K,
         minimum_score: float = DEFAULT_MINIMUM_SCORE,
+        rerank: bool = True,
+        rerank_candidate_pool: int = DEFAULT_RERANK_CANDIDATE_POOL,
         conn: sqlite3.Connection | None = None,
     ) -> list[RetrievedChunk]:
         def _run(c: sqlite3.Connection) -> list[RetrievedChunk]:
@@ -142,6 +155,20 @@ class HybridRetriever:
                 )
 
             results.sort(key=lambda r: r.score, reverse=True)
+
+            if rerank and self.reranker is not None and results:
+                # Only rerank a bounded candidate pool - a cross-encoder is
+                # too slow to run over every fused hit, and the fusion step
+                # has already discarded anything below minimum_score, so the
+                # pool is already a reasonable-quality shortlist to refine.
+                pool_size = max(rerank_candidate_pool, final_top_k)
+                pool = results[:pool_size]
+                scores = self.reranker.rerank(query, [r.text for r in pool])
+                for chunk, score in zip(pool, scores, strict=True):
+                    chunk.rerank_score = score
+                pool.sort(key=lambda r: r.rerank_score, reverse=True)
+                return pool[:final_top_k]
+
             return results[:final_top_k]
 
         if conn is not None:
@@ -150,7 +177,23 @@ class HybridRetriever:
             return _run(c)
 
 
-def build_default_hybrid_retriever() -> HybridRetriever:
+def build_default_hybrid_retriever(*, enable_reranker: bool | None = None) -> HybridRetriever:
+    """`enable_reranker=None` (the default) reads Settings.jarvis_enable_reranker
+    so callers don't each need to know about the toggle; pass True/False to
+    override explicitly (tests do this to avoid loading the cross-encoder
+    model)."""
+    if enable_reranker is None:
+        from config.settings import get_settings
+
+        enable_reranker = get_settings().jarvis_enable_reranker
+
     embedding_provider = get_default_embedding_provider()
     vector_store = get_default_vector_store(dimension=embedding_provider.dimension)
-    return HybridRetriever(embedding_provider=embedding_provider, vector_store=vector_store)
+    reranker = None
+    if enable_reranker:
+        from rag.reranker import get_default_reranker
+
+        reranker = get_default_reranker()
+    return HybridRetriever(
+        embedding_provider=embedding_provider, vector_store=vector_store, reranker=reranker
+    )

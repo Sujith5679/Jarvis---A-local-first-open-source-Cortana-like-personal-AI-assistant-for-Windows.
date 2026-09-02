@@ -101,6 +101,108 @@ def test_final_top_k_limits_results(real_db, tmp_path):
     assert len(results) == 2
 
 
+# --- Reranking (rag/reranker.py) --------------------------------------------
+
+
+class _FakeReranker:
+    """Deterministic fake: scores a passage by how many times a marker
+    substring appears in it, so tests can force the cross-encoder to
+    disagree with the fusion ranking and prove the override actually wins."""
+
+    def __init__(self, marker: str) -> None:
+        self.marker = marker
+        self.calls: list[tuple[str, list[str]]] = []
+
+    def rerank(self, query: str, passages: list[str]) -> list[float]:
+        self.calls.append((query, list(passages)))
+        return [float(p.count(self.marker)) for p in passages]
+
+
+def test_reranker_can_override_fusion_ranking(real_db, tmp_path):
+    """Fusion (keyword-only here) ranks 'a' above 'b'; the fake reranker
+    scores by a marker only 'b' contains - final order must follow the
+    reranker, proving it actually runs and actually reorders."""
+    from storage.database import get_connection
+
+    with get_connection() as conn:
+        chunk_a = _seed_chunk(conn, filename="a.txt", text="shared searchable keyword alpha")
+        chunk_b = _seed_chunk(
+            conn, filename="b.txt", text="shared searchable keyword ZZZMARKER"
+        )
+
+    embeddings = _FakeEmbeddings({})
+    vector_store = VectorStore(dimension=DIM, index_path=tmp_path / "v.faiss")
+    reranker = _FakeReranker(marker="ZZZMARKER")
+    retriever = HybridRetriever(
+        embedding_provider=embeddings, vector_store=vector_store, reranker=reranker
+    )
+
+    # Sanity check: without reranking, "a" (shorter/more exact bm25 match)
+    # would not necessarily already be ordered the way the marker demands.
+    results = retriever.retrieve(
+        "shared searchable keyword", keyword_weight=1.0, semantic_weight=0.0
+    )
+    assert results[0].chunk_id == chunk_b
+    assert results[0].rerank_score == 1.0
+    assert results[1].chunk_id == chunk_a
+    assert results[1].rerank_score == 0.0
+    assert reranker.calls  # actually invoked
+
+
+def test_rerank_false_skips_reranker(real_db, tmp_path):
+    from storage.database import get_connection
+
+    with get_connection() as conn:
+        _seed_chunk(conn, filename="a.txt", text="fraud detection approach")
+
+    embeddings = _FakeEmbeddings({})
+    vector_store = VectorStore(dimension=DIM, index_path=tmp_path / "v.faiss")
+    reranker = _FakeReranker(marker="ZZZMARKER")
+    retriever = HybridRetriever(
+        embedding_provider=embeddings, vector_store=vector_store, reranker=reranker
+    )
+
+    results = retriever.retrieve("fraud detection", rerank=False)
+    assert results[0].rerank_score is None
+    assert reranker.calls == []
+
+
+def test_no_reranker_configured_leaves_rerank_score_none(real_db, tmp_path):
+    """Every existing caller/test that doesn't pass a reranker (the default)
+    must keep working exactly as before - this is the backward-compat case."""
+    from storage.database import get_connection
+
+    with get_connection() as conn:
+        _seed_chunk(conn, filename="a.txt", text="fraud detection approach")
+
+    embeddings = _FakeEmbeddings({})
+    vector_store = VectorStore(dimension=DIM, index_path=tmp_path / "v.faiss")
+    retriever = HybridRetriever(embedding_provider=embeddings, vector_store=vector_store)
+
+    results = retriever.retrieve("fraud detection")
+    assert results[0].rerank_score is None
+
+
+def test_rerank_candidate_pool_limits_what_reranker_sees(real_db, tmp_path):
+    from storage.database import get_connection
+
+    with get_connection() as conn:
+        for i in range(5):
+            _seed_chunk(conn, filename=f"doc{i}.txt", text="shared searchable keyword")
+
+    embeddings = _FakeEmbeddings({})
+    vector_store = VectorStore(dimension=DIM, index_path=tmp_path / "v.faiss")
+    reranker = _FakeReranker(marker="ZZZMARKER")
+    retriever = HybridRetriever(
+        embedding_provider=embeddings, vector_store=vector_store, reranker=reranker
+    )
+
+    retriever.retrieve(
+        "shared searchable keyword", final_top_k=2, rerank_candidate_pool=3
+    )
+    assert len(reranker.calls[0][1]) == 3  # pool, not all 5 or just final_top_k=2
+
+
 def test_stale_vector_entry_without_sqlite_row_is_skipped(real_db, tmp_path):
     """A chunk id present in FAISS but deleted from SQLite (e.g. reindex race)
     must be skipped, not crash retrieval."""

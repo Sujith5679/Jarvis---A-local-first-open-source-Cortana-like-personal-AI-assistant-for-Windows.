@@ -43,6 +43,21 @@ DEFAULT_TOP_K_VECTOR = 20
 DEFAULT_FINAL_TOP_K = 8
 DEFAULT_MINIMUM_SCORE = 0.0
 
+# --- Reranking (rag/reranker.py) ---
+# A precision pass over the hybrid fusion's top candidates: cross-encoders
+# score (query, passage) pairs jointly through one model, which reliably
+# beats a linear combination of independently-computed BM25/cosine scores
+# on precision@top-k. Only worth running over a small candidate pool, not
+# the whole index — see rag/reranker.py's docstring.
+# cross-encoder/ms-marco-MiniLM-L-6-v2: small (~80MB), fast on CPU,
+# MS-MARCO-trained — the standard default for reranking short passages.
+DEFAULT_RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+# How many of the hybrid fusion's top-ranked candidates get sent through the
+# (slower) cross-encoder before truncating to final_top_k. Must stay >=
+# final_top_k; kept modest since cross-encoder cost scales with pool size,
+# not index size.
+DEFAULT_RERANK_CANDIDATE_POOL = 20
+
 # --- Indexing (spec.md §14) ---
 # Never index an entire drive by default.
 DEFAULT_INDEXED_FOLDER_CANDIDATES = ("Desktop", "Documents", "Downloads")

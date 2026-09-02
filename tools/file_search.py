@@ -54,7 +54,10 @@ async def search_files_handler(query: str, top_k: int = DEFAULT_FINAL_TOP_K) -> 
                 "document_id": str(r.document_id),
                 "filename": r.filename,
                 "path": r.path,
-                "score": round(r.score, 4),
+                # When reranking ran, results are ordered by rerank_score, not
+                # the fusion score - show whichever one actually produced this
+                # order, so the displayed number is never out of step with it.
+                "score": round(r.rerank_score if r.rerank_score is not None else r.score, 4),
                 "snippet": _snippet(r.text),
                 "page": r.page,
                 "section": r.section,

@@ -85,6 +85,12 @@ class Settings(BaseSettings):
     jarvis_start_minimized: bool = Field(default=True, alias="JARVIS_START_MINIMIZED")
     jarvis_enable_voice: bool = Field(default=True, alias="JARVIS_ENABLE_VOICE")
     jarvis_enable_wake_word: bool = Field(default=False, alias="JARVIS_ENABLE_WAKE_WORD")
+    # rag/reranker.py's cross-encoder precision pass over search_files
+    # results. On by default (~80MB local model, same offline-first
+    # reasoning as the embedding model) - a real quality improvement, not a
+    # numeric tuning knob like the retrieval weights in config/defaults.py,
+    # so it gets a proper on/off switch the way voice/wake-word do.
+    jarvis_enable_reranker: bool = Field(default=True, alias="JARVIS_ENABLE_RERANKER")
     # spec.md §26: configurable, defaults to Ctrl+Space. Parsed by
     # ui/hotkey.py (used by app/supervisor.py) using the `keyboard`
     # library's hotkey syntax (e.g. "ctrl+space", "ctrl+alt+j").
