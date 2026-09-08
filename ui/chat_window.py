@@ -37,9 +37,10 @@ import logging
 from agent.graph import Agent, build_agent
 from agent.state import AgentState
 from app.bootstrap import BootstrapContext
-from PySide6.QtCore import QSettings, QThread, Signal
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QSettings, QThread, Signal
 from PySide6.QtGui import QActionGroup, QCloseEvent
 from PySide6.QtWidgets import (
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -60,7 +61,7 @@ from voice.tts import SynthesisError
 from voice.tts import synthesize as tts_synthesize
 
 from ui.history import ConversationHistoryDialog
-from ui.mcp_settings import MCPServersDialog
+from ui.icon import build_icon, build_icon_pixmap
 from ui.messages import ChatLog
 from ui.notifications import NotificationService
 from ui.settings import FoldersDialog
@@ -99,42 +100,6 @@ class ChatTurnWorker(QThread):
             self.succeeded.emit(dict(state))
         except Exception as exc:  # pragma: no cover - defensive; agent handles its own errors
             logger.exception("Unexpected error running agent turn")
-            self.failed.emit(str(exc))
-
-
-class MCPDiscoveryWorker(QThread):
-    """Connects to every configured+enabled MCP server (integrations/mcp/)
-    and registers their tools into the agent's tool registry, off the UI
-    thread — server startup (especially npx-spawned ones) can take a few
-    seconds and must never block the UI (spec.md §42), same reasoning as
-    IndexingWorker (ui/settings.py). Tools become available for the *next*
-    agent turn once this finishes — a turn already in flight when discovery
-    completes doesn't retroactively gain them.
-
-    No connection is kept open once this finishes — each MCP tool call
-    later opens its own short-lived connection (integrations/mcp/bridge.py's
-    module docstring explains why: an mcp.Client's background tasks are
-    tied to the event loop that opened it, and that loop is this worker's
-    own asyncio.run() call, which is long gone by the time a tool actually
-    gets invoked from a separate agent turn)."""
-
-    finished_ok = Signal(int)  # number of MCP servers successfully reached
-    failed = Signal(str)
-
-    def __init__(self, registry) -> None:
-        super().__init__()
-        self.registry = registry
-
-    def run(self) -> None:
-        from integrations.mcp.bridge import discover_and_register
-
-        try:
-            reached = asyncio.run(discover_and_register(self.registry))
-            self.finished_ok.emit(reached)
-        except Exception as exc:  # pragma: no cover - defensive; discover_and_register
-            # itself never raises (per-server failures are caught internally) - this only
-            # catches a genuinely unexpected bug, so MCP can never take the app down.
-            logger.exception("MCP discovery failed unexpectedly")
             self.failed.emit(str(exc))
 
 
@@ -230,7 +195,9 @@ class VoiceTurnWorker(QThread):
         )
         if should_speak:
             try:
-                audio, sr = await tts_synthesize(state["response"], session_id=session_id)
+                # state.get("response") is guaranteed truthy by should_speak,
+                # but we use 'or ""' to satisfy strict type checkers like Pyright.
+                audio, sr = await tts_synthesize(state.get("response") or "", session_id=session_id)
                 self.started_speaking.emit()
                 play_audio(audio, sr)
             except SynthesisError as exc:
@@ -246,17 +213,14 @@ class ChatWindow(QMainWindow):
         self.agent = build_agent(ctx.settings)
         self.conversation_id = conv_repo.create_conversation()
         self._worker: ChatTurnWorker | ConfirmTurnWorker | VoiceTurnWorker | None = None
-        self._mcp_server_count = 0  # how many MCP servers are currently reachable
-        self._mcp_worker: MCPDiscoveryWorker | None = None
-        self._mcp_reconnect_callback = None
-        self._start_mcp_discovery()
         # Set by run() below after construction, if a tray is available on
         # this platform — purely a convenience menu (pause indexing,
-        # voice toggle, reindex, view logs) while the app happens to be
         # open; the global hotkey now lives entirely in app/supervisor.py.
-        self.tray = None
+        import typing
+        self.tray: typing.Any = None
 
         self.setWindowTitle("JARVIS")
+        self.setWindowIcon(build_icon())
         # A previous session's saved size/position (see closeEvent) wins if
         # present - makes the popup behave like something docked in place
         # rather than reappearing wherever Windows feels like each launch.
@@ -265,7 +229,8 @@ class ChatWindow(QMainWindow):
         restored = False
         if saved_geometry:
             try:
-                restored = bool(self.restoreGeometry(saved_geometry))
+                import typing
+                restored = self.restoreGeometry(typing.cast(bytes, saved_geometry))
             except (TypeError, ValueError):
                 # A saved value in an unexpected shape (e.g. a stale/foreign
                 # registry entry) should degrade to the default size, never
@@ -290,8 +255,34 @@ class ChatWindow(QMainWindow):
         self.top_bar = QWidget(central)
         top_bar_layout = QHBoxLayout(self.top_bar)
         top_bar_layout.setContentsMargins(10, 6, 6, 6)
+        top_bar_layout.setSpacing(6)
+
+        self.logo_label = QLabel(self.top_bar)
+        self.logo_label.setPixmap(build_icon_pixmap(20))
+        self.logo_label.setFixedSize(20, 20)
+        top_bar_layout.addWidget(self.logo_label)
+
         self.title_label = QLabel("JARVIS", self.top_bar)
         top_bar_layout.addWidget(self.title_label, stretch=1)
+
+        # Presence dot: a small always-visible indicator of what JARVIS is
+        # doing right now (idle/listening/thinking/speaking - spec.md §25's
+        # required UI states), pulsing while busy. status_label already says
+        # this in words; this is the same information read at a glance,
+        # closer to how voice assistants like Cortana signal "I'm active"
+        # without needing to read anything.
+        self.presence_dot = QLabel(self.top_bar)
+        self.presence_dot.setFixedSize(9, 9)
+        self._presence_opacity = QGraphicsOpacityEffect(self.presence_dot)
+        self.presence_dot.setGraphicsEffect(self._presence_opacity)
+        self._presence_anim = QPropertyAnimation(self._presence_opacity, b"opacity", self)
+        self._presence_anim.setDuration(900)
+        self._presence_anim.setStartValue(1.0)
+        self._presence_anim.setKeyValueAt(0.5, 0.35)
+        self._presence_anim.setEndValue(1.0)
+        self._presence_anim.setEasingCurve(QEasingCurve.Type.InOutSine)
+        self._presence_anim.setLoopCount(-1)
+        top_bar_layout.addWidget(self.presence_dot)
 
         self.menu_button = QToolButton(self.top_bar)
         self.menu_button.setText("⋮")  # vertical ellipsis
@@ -325,20 +316,20 @@ class ChatWindow(QMainWindow):
         if ctx.settings.jarvis_enable_voice:
             self._recorder = AudioRecorder()
             self.mic_button = QPushButton("🎤", input_row)
-            self.mic_button.setFixedWidth(36)
+            self.mic_button.setFixedSize(34, 34)
             self.mic_button.setToolTip("Hold to talk")
             self.mic_button.pressed.connect(self._on_mic_pressed)
             self.mic_button.released.connect(self._on_mic_released)
             input_layout.addWidget(self.mic_button)
 
-        self.send_button = QPushButton(">", input_row)
-        self.send_button.setFixedWidth(36)
+        self.send_button = QPushButton("➤", input_row)
+        self.send_button.setFixedSize(34, 34)
         self.send_button.clicked.connect(self._on_send_clicked)
         input_layout.addWidget(self.send_button)
 
         layout.addWidget(input_row)
         self.setCentralWidget(central)
-        self._apply_theme_to_chrome()
+        self._apply_theme_to_chrome()  # also sets the initial (idle) presence dot state
 
         self.chat_log.append_message("assistant", "How can I help?")
 
@@ -352,9 +343,7 @@ class ChatWindow(QMainWindow):
         # always fully exits — app/supervisor.py is what stays resident for
         # the global hotkey now, so this process only needs to run while
         # actually in use. Ctrl+Space (or the supervisor's own tray icon)
-        # launches a fresh instance the next time it's needed. Nothing to
-        # tear down for MCP here — no connection is ever kept open between
-        # calls (integrations/mcp/bridge.py's module docstring explains why).
+        # launches a fresh instance the next time it's needed.
         QSettings(SETTINGS_ORG, SETTINGS_APP).setValue(_GEOMETRY_SETTINGS_KEY, self.saveGeometry())
         self.scheduler.stop()
         super().closeEvent(event)
@@ -374,8 +363,6 @@ class ChatWindow(QMainWindow):
         settings_action.triggered.connect(self._open_folders_dialog)
         usage_action = menu.addAction("Usage && Costs...")
         usage_action.triggered.connect(self._open_usage_dialog)
-        mcp_action = menu.addAction("MCP Servers...")
-        mcp_action.triggered.connect(self._open_mcp_dialog)
 
         menu.addSeparator()
         theme_menu = menu.addMenu("Theme")
@@ -417,95 +404,68 @@ class ChatWindow(QMainWindow):
     def _apply_theme_to_chrome(self) -> None:
         """Styles everything except ChatLog (which manages its own
         stylesheet via apply_theme()) - the window background, top bar,
-        status line, and input row."""
+        status line, and input row. Rounded/gradient where QSS actually
+        supports it (live-verified: unlike ChatLog's HTML bubbles, plain
+        QWidget stylesheets render border-radius and qlineargradient fine),
+        in the same cyan/teal family as ui/icon.py's logo."""
         t = self.theme
         self.setStyleSheet(f"QMainWindow {{ background: {t.window_bg}; }}")
-        self.top_bar.setStyleSheet(
-            f"background: {t.surface_bg}; border-bottom: 1px solid {t.border};"
+        self.top_bar.setStyleSheet(f"background: {t.surface_bg}; border-bottom: none;")
+        self.title_label.setStyleSheet(
+            f"color: {t.text}; font-weight: 600; font-size: 13px; padding-left: 2px;"
         )
-        self.title_label.setStyleSheet(f"color: {t.text}; font-weight: 600; padding-left: 2px;")
-        self.menu_button.setStyleSheet(f"color: {t.muted_text}; border: none; font-size: 16px;")
+        self.menu_button.setStyleSheet(
+            f"QToolButton {{ color: {t.muted_text}; border: none; font-size: 16px; "
+            f"border-radius: 4px; padding: 2px 4px; }}"
+            f"QToolButton::menu-indicator {{ image: none; }}"
+            f"QToolButton:hover {{ background: {t.assistant_bubble_bg}; }}"
+        )
         self.status_label.setStyleSheet(
             f"color: {t.status_text}; font-style: italic; padding: 2px 8px; "
             f"background: {t.window_bg};"
         )
         self.input_field.setStyleSheet(
-            f"background: {t.input_bg}; color: {t.text}; border: 1px solid {t.border}; "
-            f"border-radius: 4px; padding: 4px 6px;"
+            f"QLineEdit {{ background: {t.input_bg}; color: {t.text}; "
+            f"border: 1px solid {t.border}; border-radius: 16px; padding: 6px 12px; }}"
+            f"QLineEdit:focus {{ border: 1px solid {t.accent}; }}"
         )
         self.send_button.setStyleSheet(
-            f"background: {t.accent}; color: #ffffff; border: none; border-radius: 4px;"
+            f"QPushButton {{ color: #ffffff; border: none; border-radius: 17px; "
+            f"font-size: 14px; "
+            f"background: qlineargradient(x1:0, y1:0, x2:1, y2:1, "
+            f"stop:0 {t.accent}, stop:1 {t.accent_end}); }}"
+            f"QPushButton:hover {{ background: {t.accent_end}; }}"
+            f"QPushButton:disabled {{ background: {t.border}; color: {t.muted_text}; }}"
         )
         if self._recorder is not None and not getattr(self, "_mic_recording", False):
-            self.mic_button.setStyleSheet("")
+            self.mic_button.setStyleSheet(
+                f"QPushButton {{ background: {t.assistant_bubble_bg}; color: {t.text}; "
+                f"border: none; border-radius: 17px; font-size: 14px; }}"
+                f"QPushButton:hover {{ background: {t.border}; }}"
+                f"QPushButton:disabled {{ color: {t.muted_text}; }}"
+            )
+        # Refresh the presence dot's color for the new theme without
+        # changing what state it's actually reporting (pulsing or not).
+        self._set_presence(getattr(self, "_presence_state", "idle"))
 
-    # --- MCP (integrations/mcp/) ------------------------------------------
-    #
-    # _start_mcp_discovery() and reconnect_mcp_servers() must never run
-    # concurrently — discover_and_register() mutates the shared tool
-    # registry directly from the worker thread, so two overlapping calls
-    # (e.g. the initial startup discovery still in flight when the user
-    # opens Settings and clicks "Reconnect Now" right away) would both
-    # register into the same registry and collide. Guarded the same way
-    # ui/settings.py's IndexingWorker/_start_indexing() already guards
-    # against a second indexing run starting mid-first-run: refuse to
-    # start while `_mcp_worker.isRunning()`, rather than trying to
-    # reconcile two interleaved results afterward.
+    # --- Presence dot (top bar) ---------------------------------------------
 
-    def _start_mcp_discovery(self) -> bool:
-        """Returns True if a discovery run was actually started, False if
-        one was already in progress."""
-        if self._mcp_worker is not None and self._mcp_worker.isRunning():
-            return False
-        worker = MCPDiscoveryWorker(self.agent.tool_registry)
-        worker.finished_ok.connect(self._on_mcp_discovery_finished)
-        worker.failed.connect(lambda msg: logger.warning("MCP discovery failed: %s", msg))
-        # Clearing self._mcp_worker must happen before deleteLater() runs -
-        # deleteLater() destroys the underlying C++ QThread object, and any
-        # later self._mcp_worker.isRunning() call (the busy-guard above) on
-        # a reference to that now-deleted object raises
-        # "RuntimeError: Internal C++ object already deleted", not just
-        # returns a stale value. Both are connected to the same `finished`
-        # signal and run in connection order, so this one first is enough.
-        worker.finished.connect(self._on_mcp_worker_thread_finished)
-        worker.finished.connect(worker.deleteLater)
-        self._mcp_worker = worker
-        worker.start()
-        return True
+    _PRESENCE_COLORS = {
+        "idle": "muted_text",
+        "listening": "error_text",
+        "thinking": "accent",
+        "speaking": "accent_end",
+    }
 
-    def _on_mcp_worker_thread_finished(self) -> None:
-        self._mcp_worker = None
-
-    def _on_mcp_discovery_finished(self, server_count: int) -> None:
-        self._mcp_server_count = server_count
-        if server_count:
-            self.chat_log.append_status(f"🔌 Connected {server_count} MCP server(s).")
-        if self._mcp_reconnect_callback is not None:
-            callback = self._mcp_reconnect_callback
-            self._mcp_reconnect_callback = None
-            callback(server_count)
-
-    def reconnect_mcp_servers(self, on_done=None) -> bool:
-        """Unregisters every current MCP tool, then reconnects from the
-        current mcp_servers.json — what ui/mcp_settings.py's "Reconnect
-        Now" calls after an add/edit/remove, so changes take effect
-        without restarting JARVIS.
-
-        Returns True if a reconnect was actually started, False if a
-        discovery/reconnect was already in progress (caller should ask the
-        user to wait a moment and try again — `on_done` is NOT called in
-        that case, since nothing was actually kicked off)."""
-        if self._mcp_worker is not None and self._mcp_worker.isRunning():
-            return False
-
-        for tool in list(self.agent.tool_registry.all()):
-            if tool.name.startswith("mcp__"):
-                self.agent.tool_registry.unregister(tool.name)
-        self._mcp_server_count = 0
-
-        self._mcp_reconnect_callback = on_done
-        self._start_mcp_discovery()
-        return True
+    def _set_presence(self, state: str) -> None:
+        self._presence_state = state
+        color = getattr(self.theme, self._PRESENCE_COLORS.get(state, "muted_text"))
+        self.presence_dot.setStyleSheet(f"background: {color}; border-radius: 4px;")
+        if state == "idle":
+            self._presence_anim.stop()
+            self._presence_opacity.setOpacity(1.0)
+        elif self._presence_anim.state() != QPropertyAnimation.State.Running:
+            self._presence_anim.start()
 
     def show_and_focus(self) -> None:
         self.showNormal()
@@ -524,10 +484,6 @@ class ChatWindow(QMainWindow):
         dialog = UsageDialog(str(self.conversation_id), self)
         dialog.exec()
 
-    def _open_mcp_dialog(self) -> None:
-        dialog = MCPServersDialog(self, self)
-        dialog.exec()
-
     def _open_history_dialog(self) -> None:
         dialog = ConversationHistoryDialog(self, self)
         dialog.exec()
@@ -541,8 +497,18 @@ class ChatWindow(QMainWindow):
     # conversation it was never actually part of. Same reasoning as
     # _set_thinking() disabling input during a turn, applied here too.
 
+    def _is_worker_running(self) -> bool:
+        if self._worker is None:
+            return False
+        try:
+            return self._worker.isRunning()
+        except RuntimeError:
+            # The C++ object was already deleted by deleteLater
+            self._worker = None
+            return False
+
     def start_new_conversation(self) -> None:
-        if self._worker is not None and self._worker.isRunning():
+        if self._is_worker_running():
             self.status_label.setText("Please wait for the current response to finish first.")
             return
         self.conversation_id = conv_repo.create_conversation()
@@ -550,7 +516,7 @@ class ChatWindow(QMainWindow):
         self.chat_log.append_message("assistant", "How can I help?")
 
     def switch_to_conversation(self, conversation_id: int) -> None:
-        if self._worker is not None and self._worker.isRunning():
+        if self._is_worker_running():
             self.status_label.setText("Please wait for the current response to finish first.")
             return
         self.conversation_id = conversation_id
@@ -573,6 +539,7 @@ class ChatWindow(QMainWindow):
         if self._recorder is not None:
             self.mic_button.setEnabled(not thinking)
         self.status_label.setText("Jarvis is thinking..." if thinking else "")
+        self._set_presence("thinking" if thinking else "idle")
         if not thinking:
             self.input_field.setFocus()
 
@@ -624,11 +591,13 @@ class ChatWindow(QMainWindow):
         self.input_field.setEnabled(False)
         self.send_button.setEnabled(False)
         self.status_label.setText("Listening...")
+        self._set_presence("listening")
         # Visual "Listening" state (spec.md §25's required UI states) - the
         # mic button otherwise looks identical whether idle or recording.
         self._mic_recording = True
         self.mic_button.setStyleSheet(
-            f"background: {self.theme.error_text}; border-radius: 4px;"
+            f"background: {self.theme.error_text}; color: white; border: none; "
+            f"border-radius: 17px; font-size: 14px;"
         )
 
     def _on_mic_released(self) -> None:
@@ -636,7 +605,9 @@ class ChatWindow(QMainWindow):
         audio = self._recorder.stop()
         self._mic_recording = False
         self.mic_button.setStyleSheet("")
+        self._apply_theme_to_chrome()  # restore the mic button's idle (non-inline) style
         self.status_label.setText("Transcribing...")
+        self._set_presence("thinking")
 
         self._worker = VoiceTurnWorker(
             self.agent, self.conversation_id, audio, self._recorder.sample_rate, speak_reply=True
@@ -644,8 +615,8 @@ class ChatWindow(QMainWindow):
         self._worker.transcribed.connect(self._on_voice_transcribed)
         self._worker.succeeded.connect(self._on_turn_succeeded)
         self._worker.failed.connect(self._on_voice_failed)
-        self._worker.started_speaking.connect(lambda: self.status_label.setText("Speaking..."))
-        self._worker.finished_speaking.connect(lambda: self.status_label.setText(""))
+        self._worker.started_speaking.connect(self._on_speaking_started)
+        self._worker.finished_speaking.connect(self._on_speaking_finished)
         self._worker.finished.connect(self._worker.deleteLater)
         self._worker.start()
 
@@ -655,6 +626,14 @@ class ChatWindow(QMainWindow):
     def _on_voice_failed(self, message: str) -> None:
         self._set_thinking(False)
         self.chat_log.append_message("error", message)
+
+    def _on_speaking_started(self) -> None:
+        self.status_label.setText("Speaking...")
+        self._set_presence("speaking")
+
+    def _on_speaking_finished(self) -> None:
+        self.status_label.setText("")
+        self._set_presence("idle")
 
     # --- Confirmation flow (spec.md §25 "Waiting for confirmation", §28) ------
 
@@ -695,6 +674,7 @@ def run(ctx: BootstrapContext, health_results: list | None = None) -> int:
     from ui.tray import TrayIcon
 
     app = QApplication.instance() or QApplication(sys.argv)
+    assert isinstance(app, QApplication)
     _sigint_timer = enable_ctrl_c_quit(app)  # noqa: F841 - must stay alive until app.exec() returns
     window = ChatWindow(ctx)
 

@@ -64,11 +64,7 @@ class ToolRegistry:
         self._tools[tool.name] = tool
 
     def unregister(self, name: str) -> None:
-        """Removes a tool if present; a no-op otherwise. Used by
-        integrations/mcp/ to tear down a server's tools before
-        reconnecting with fresh config (ui/mcp_settings.py's
-        "Reconnect Now") — built-in tools never need this, only
-        dynamically-discovered ones."""
+        """Removes a tool if present; a no-op otherwise."""
         self._tools.pop(name, None)
 
     def get(self, name: str) -> Tool | None:

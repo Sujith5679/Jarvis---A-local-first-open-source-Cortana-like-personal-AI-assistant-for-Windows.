@@ -12,7 +12,7 @@ from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from config.defaults import DEFAULT_HOTKEY
@@ -114,6 +114,30 @@ class Settings(BaseSettings):
     google_client_id: str | None = Field(default=None, alias="GOOGLE_CLIENT_ID")
     google_client_secret: str | None = Field(default=None, alias="GOOGLE_CLIENT_SECRET")
     google_redirect_uri: str | None = Field(default=None, alias="GOOGLE_REDIRECT_URI")
+
+    @field_validator(
+        "groq_api_key",
+        "groq_model",
+        "ollama_cloud_api_key",
+        "ollama_cloud_model",
+        "ollama_local_model",
+        "searxng_dir",
+        "jarvis_user_name",
+        "jarvis_user_email",
+        "jarvis_data_dir",
+        "deepgram_api_key",
+        "piper_voice_path",
+        "google_client_id",
+        "google_client_secret",
+        "google_redirect_uri",
+        mode="before",
+    )
+    @classmethod
+    def _empty_str_to_none(cls, v: object) -> object:
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
 
     # --- Derived / not read from env directly ---
     configuration_mode: ConfigurationMode = ConfigurationMode.AUTO

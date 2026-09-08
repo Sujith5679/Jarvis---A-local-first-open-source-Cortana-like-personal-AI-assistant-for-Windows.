@@ -9,7 +9,9 @@ from voice.stt_groq import GroqSTTError
 
 
 def _settings(**overrides) -> Settings:
+    overrides.setdefault("_env_file", None)
     return Settings(**overrides)
+
 
 
 # 0.5s @ 16kHz, well above both is_silent()'s duration and RMS floors — real

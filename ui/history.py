@@ -1,10 +1,8 @@
 """Conversation history dialog — browse and resume past conversations, or
 delete one. Opened from ChatWindow's "Chat" menu ("History...").
 
-Distinct from ui/mcp_settings.py's "config file, applied on Reconnect Now"
-pattern: a conversation is switched into *immediately* on open (no restart/
-reconnect step needed) since it's just loading rows already in SQLite, not
-re-establishing an external connection.
+A conversation is switched into *immediately* on open (no restart
+needed) since it's just loading rows already in SQLite.
 """
 
 from __future__ import annotations
@@ -27,9 +25,9 @@ def _display_title(conversation: dict) -> str:
 
 
 class ConversationHistoryDialog(QDialog):
-    def __init__(self, window, parent=None) -> None:
+    def __init__(self, chat_window, parent=None) -> None:
         super().__init__(parent)
-        self.window = window  # ui.chat_window.ChatWindow
+        self.chat_window = chat_window  # ui.chat_window.ChatWindow
         self.setWindowTitle("Conversation History")
         self.resize(440, 420)
 
@@ -69,7 +67,7 @@ class ConversationHistoryDialog(QDialog):
         self._conversations = conv_repo.list_conversations()
         self.conversation_list.clear()
         for conversation in self._conversations:
-            is_current = conversation["id"] == self.window.conversation_id
+            is_current = conversation["id"] == self.chat_window.conversation_id
             current_marker = " (current)" if is_current else ""
             timestamp = conversation["updated_at"][:19]
             label = f"{_display_title(conversation)}{current_marker} — {timestamp}"
@@ -85,7 +83,7 @@ class ConversationHistoryDialog(QDialog):
         conversation = self._selected_conversation()
         if conversation is None:
             return
-        self.window.switch_to_conversation(conversation["id"])
+        self.chat_window.switch_to_conversation(conversation["id"])
         self.accept()
 
     def _on_delete(self) -> None:
@@ -101,10 +99,10 @@ class ConversationHistoryDialog(QDialog):
             return
 
         conv_repo.delete_conversation(conversation["id"])
-        if conversation["id"] == self.window.conversation_id:
+        if conversation["id"] == self.chat_window.conversation_id:
             # The conversation on screen just vanished from under it -
             # never leave the window pointed at a conversation_id that no
             # longer exists (the next message would violate the messages
             # table's FK to conversations).
-            self.window.start_new_conversation()
+            self.chat_window.start_new_conversation()
         self._refresh_list()

@@ -10,10 +10,8 @@ Menu exactly per spec:
     View logs
     Quit
 
-No branded icon asset exists yet, so the tray icon is a small generated
-monogram rather than a placeholder image file that would need replacing
-later anyway — swap `_build_icon()` for `QIcon("path/to/real/icon.ico")`
-once real branding exists.
+The tray icon is JARVIS's app icon (ui/icon.py) - a small procedurally
+drawn "AI core" orb, not a raster asset file.
 
 This tray icon only exists while JARVIS's main window is actually running
 — it's a convenience menu for that session, not what keeps Ctrl+Space
@@ -27,36 +25,18 @@ from __future__ import annotations
 import logging
 import os
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 from rag import indexing_state
 
+from ui.icon import build_icon
 from ui.settings import IndexingWorker
 
 logger = logging.getLogger("jarvis.ui.tray")
 
 
-def _build_icon() -> QIcon:
-    size = 64
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setBrush(QColor("#4f46e5"))
-    painter.setPen(Qt.PenStyle.NoPen)
-    painter.drawEllipse(2, 2, size - 4, size - 4)
-    painter.setPen(QColor("white"))
-    font = QFont("Segoe UI", int(size * 0.5), QFont.Weight.Bold)
-    painter.setFont(font)
-    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "J")
-    painter.end()
-    return QIcon(pixmap)
-
-
 class TrayIcon(QSystemTrayIcon):
     def __init__(self, window, parent=None) -> None:
-        super().__init__(_build_icon(), parent)
+        super().__init__(build_icon(), parent)
         self.window = window
         self._index_worker: IndexingWorker | None = None
         self.setToolTip("JARVIS")

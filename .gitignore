@@ -1,16 +1,73 @@
+# ==============================================================================
+# Git Ignore Rules for JARVIS
+# ==============================================================================
+
+# Environment variables & secrets (NEVER commit real credentials)
 .env
 .env.*
+.env.local
+.env.development
+.env.test
+.env.production
 !.env.example
-mcp_servers.json
-!mcp_servers.example.json
+*.pem
+*.key
+
+# Application runtime data & local databases
 data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Logs
 *.log
-.venv/
+logs/
+
+# Python bytecode & caches
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Testing & quality tooling caches
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-*.egg-info/
+.coverage
+htmlcov/
+
+# Packaging & distribution
 build/
 dist/
+*.egg-info/
+*.egg
+.eggs/
+
+# IDEs & code editors
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+*~
+
+# Operating system files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# MCP server configurations (may contain local tokens/headers)
+mcp_servers.json
+!mcp_servers.example.json

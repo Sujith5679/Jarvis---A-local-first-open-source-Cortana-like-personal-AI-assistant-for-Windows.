@@ -35,3 +35,21 @@ def test_logs_and_indexes_dirs_created(isolated_settings):
     assert isolated_settings.logs_dir.exists()
     assert isolated_settings.indexes_dir.exists()
     assert isolated_settings.cache_dir.exists()
+
+
+def test_empty_strings_coerced_to_none(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("JARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("GROQ_API_KEY", "")
+    monkeypatch.setenv("JARVIS_USER_NAME", "   ")
+    monkeypatch.setenv("SEARXNG_DIR", "")
+    get_settings.cache_clear()
+    settings = get_settings()
+    try:
+        assert settings.groq_api_key is None
+        assert settings.jarvis_user_name is None
+        assert settings.searxng_dir is None
+        assert settings.has_groq() is False
+    finally:
+        get_settings.cache_clear()
+

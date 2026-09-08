@@ -33,7 +33,7 @@ def create_conversation(title: str | None = None, conn: sqlite3.Connection | Non
             "INSERT INTO conversations (title, created_at, updated_at) VALUES (?, ?, ?)",
             (title, now, now),
         )
-        return int(cur.lastrowid)
+        return int(cur.lastrowid or 0)
 
     if conn is not None:
         return _run(conn)
@@ -97,7 +97,7 @@ def add_message(
         )
         if role == "user":
             _maybe_set_title(c, conversation_id, content)
-        return int(cur.lastrowid)
+        return int(cur.lastrowid or 0)
 
     if conn is not None:
         return _run(conn)

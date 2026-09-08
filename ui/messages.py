@@ -31,6 +31,7 @@ from PySide6.QtCore import QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QMessageBox, QTextBrowser
 
+from ui.markdown_render import render_markdown
 from ui.theme import LIGHT, Theme
 
 logger = logging.getLogger("jarvis.ui.messages")
@@ -94,15 +95,58 @@ class ChatLog(QTextBrowser):
             f"{html.escape(label)}</a>"
         )
 
+    def _markdown_inline_css(self, fg: str, bg: str) -> str:
+        """Inline CSS for markdown-generated HTML elements inside an assistant
+        bubble.  Qt's rich-text engine supports a CSS 2.1 subset — these rules
+        cover everything the ``markdown`` library emits with the enabled
+        extensions (tables, fenced_code, nl2br, sane_lists)."""
+        t = self.theme
+        # Code background: slightly tinted surface for contrast
+        code_bg = t.border  # subtle contrast against bubble bg
+        return (
+            f"<style>"
+            # --- Tables -------------------------------------------------
+            f"table {{ border-collapse: collapse; width: 100%; margin: 6px 0; }}"
+            f"th, td {{ border: 1px solid {t.muted_text}; padding: 4px 8px; "
+            f"  text-align: left; color: {fg}; font-size: 12px; }}"
+            f"th {{ background-color: {code_bg}; font-weight: 600; }}"
+            # --- Headings -----------------------------------------------
+            f"h1 {{ font-size: 17px; margin: 8px 0 4px; color: {fg}; }}"
+            f"h2 {{ font-size: 15px; margin: 8px 0 4px; color: {fg}; }}"
+            f"h3 {{ font-size: 14px; margin: 6px 0 3px; color: {fg}; }}"
+            f"h4, h5, h6 {{ font-size: 13px; margin: 4px 0 2px; color: {fg}; }}"
+            # --- Code ---------------------------------------------------
+            f"code {{ background: {code_bg}; padding: 1px 4px; font-size: 12px; "
+            f"  font-family: Consolas, monospace; }}"
+            f"pre {{ background: {code_bg}; padding: 8px; margin: 4px 0; "
+            f"  font-size: 12px; font-family: Consolas, monospace; "
+            f"  white-space: pre-wrap; word-wrap: break-word; }}"
+            # --- Lists --------------------------------------------------
+            f"ul, ol {{ margin: 4px 0 4px 16px; padding: 0; }}"
+            f"li {{ margin: 2px 0; color: {fg}; }}"
+            # --- Links --------------------------------------------------
+            f"a {{ color: {t.accent}; text-decoration: underline; }}"
+            # --- Blockquotes --------------------------------------------
+            f"blockquote {{ border-left: 3px solid {t.accent}; margin: 4px 0; "
+            f"  padding: 2px 8px; color: {t.muted_text}; }}"
+            # --- Horizontal rules ---------------------------------------
+            f"hr {{ border: none; border-top: 1px solid {t.muted_text}; margin: 8px 0; }}"
+            # --- Paragraphs (tighter spacing inside bubbles) ------------
+            f"p {{ margin: 4px 0; }}"
+            f"</style>"
+        )
+
     def _bubble_html(self, role: str, text: str, citations: list[dict] | None) -> str:
-        safe_text = html.escape(text).replace("\n", "<br>")
         if role == "user":
             align, bg, fg = "right", self.theme.user_bubble_bg, self.theme.user_bubble_text
+            body_html = html.escape(text).replace("\n", "<br>")
         elif role == "error":
             align, bg, fg = "left", self.theme.surface_bg, self.theme.error_text
-        else:  # assistant
+            body_html = html.escape(text).replace("\n", "<br>")
+        else:  # assistant — render markdown
             align = "left"
             bg, fg = self.theme.assistant_bubble_bg, self.theme.assistant_bubble_text
+            body_html = self._markdown_inline_css(fg, bg) + render_markdown(text)
 
         chips = [c for c in (self._citation_chip_html(c) for c in citations or []) if c]
         citations_html = (
@@ -114,7 +158,7 @@ class ChatLog(QTextBrowser):
         return (
             f'<table width="100%" cellspacing="0" style="margin:4px 0;"><tr><td align="{align}">'
             f'<table cellspacing="0"><tr><td style="background-color:{bg}; padding:8px 10px;">'
-            f'<span style="color:{fg};">{safe_text}</span>'
+            f'<span style="color:{fg};">{body_html}</span>'
             f"{citations_html}"
             f"</td></tr></table>"
             f"</td></tr></table>"

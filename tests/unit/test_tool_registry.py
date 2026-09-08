@@ -63,10 +63,6 @@ def test_llm_schemas_shape():
     ]
 
 
-# --- unregister(): used by ui/mcp_settings.py's "Reconnect Now" to tear
-# down a server's tools before re-discovering with fresh config ---------
-
-
 def test_unregister_removes_tool():
     registry = ToolRegistry()
     registry.register(_tool("a"))
@@ -81,11 +77,10 @@ def test_unregister_missing_tool_is_a_noop():
 
 
 def test_unregister_then_reregister_same_name_succeeds():
-    """Confirms the exact pattern ChatWindow.reconnect_mcp_servers() relies
-    on: unregister an old mcp__* tool, then register a fresh one with the
-    same name, without hitting the duplicate-name ValueError."""
+    """Confirms that unregistering a tool allows registering a new tool
+    with the same name, without hitting the duplicate-name ValueError."""
     registry = ToolRegistry()
-    registry.register(_tool("mcp__server__tool"))
-    registry.unregister("mcp__server__tool")
-    registry.register(_tool("mcp__server__tool"))  # must not raise
-    assert registry.get("mcp__server__tool") is not None
+    registry.register(_tool("custom_tool"))
+    registry.unregister("custom_tool")
+    registry.register(_tool("custom_tool"))  # must not raise
+    assert registry.get("custom_tool") is not None

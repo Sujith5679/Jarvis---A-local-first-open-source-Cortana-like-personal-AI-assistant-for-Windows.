@@ -10,7 +10,9 @@ from web.searxng_process import SearXNGProcessManager, get_searxng_manager
 
 
 def _settings(**overrides) -> Settings:
+    overrides.setdefault("_env_file", None)
     return Settings(**overrides)
+
 
 
 def _venv_python(tmp_path):

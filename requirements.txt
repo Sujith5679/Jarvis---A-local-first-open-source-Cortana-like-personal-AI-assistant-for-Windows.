@@ -24,6 +24,7 @@ APScheduler>=3.10
 # --- Phase 4: web (readability-style boilerplate stripping for fetched pages;
 #     local HTML files use plain BeautifulSoup tag-stripping, see documents/text.py) ---
 readability-lxml>=0.8
+markdown>=3.6  # renders LLM markdown (tables, headers, code blocks) in chat bubbles
 
 # --- Phase 5: voice (fully local/offline STT + TTS) ---
 faster-whisper>=1.0
@@ -36,10 +37,6 @@ tzdata>=2024.1  # Windows doesn't ship IANA tz data; needed by some faster-whisp
 #     already a dependency; Task Scheduler is driven via stdlib subprocess) ---
 keyboard>=0.13.5  # global hotkey (ui/hotkey.py)
 
-# --- MCP client (integrations/mcp/) — lets JARVIS use tools from any
-#     user-configured MCP server (mcp_servers.json), same idea as Claude
-#     Desktop/Claude Code's own MCP support ---
-mcp>=2.0
 
 # --- Dev / test tooling (all phases) ---
 pytest>=8.0

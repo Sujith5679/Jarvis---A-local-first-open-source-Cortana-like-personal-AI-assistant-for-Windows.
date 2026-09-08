@@ -9,7 +9,9 @@ from voice.tts_groq import GroqTTSError
 
 
 def _settings(**overrides) -> Settings:
+    overrides.setdefault("_env_file", None)
     return Settings(**overrides)
+
 
 
 @pytest.mark.asyncio

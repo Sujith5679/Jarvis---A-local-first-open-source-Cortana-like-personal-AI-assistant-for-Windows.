@@ -34,9 +34,8 @@ import sys
 import time
 
 from config.settings import BASE_DIR, get_settings
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
+from ui.icon import build_icon
 
 from app.qt_sigint import enable_ctrl_c_quit
 
@@ -50,26 +49,10 @@ SW_RESTORE = 9
 # first second or two) — not a hard lock, just a debounce.
 RELAUNCH_DEBOUNCE_SECONDS = 8.0
 
-
-def _build_icon() -> QIcon:
-    # Same generated monogram as ui/tray.py's _build_icon(), duplicated
-    # rather than imported — importing ui.tray would pull in ui.settings
-    # (rag.embeddings/rag.ingestion), exactly the heavy imports this
-    # process exists to avoid.
-    size = 64
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setBrush(QColor("#4f46e5"))
-    painter.setPen(Qt.PenStyle.NoPen)
-    painter.drawEllipse(2, 2, size - 4, size - 4)
-    painter.setPen(QColor("white"))
-    font = QFont("Segoe UI", int(size * 0.5), QFont.Weight.Bold)
-    painter.setFont(font)
-    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "J")
-    painter.end()
-    return QIcon(pixmap)
+# ui.icon has no dependency beyond PySide6 itself (no ui.settings/rag import
+# chain), so importing it directly here - unlike ui.tray, which would pull
+# in ui.settings -> rag.embeddings/rag.ingestion - keeps this process light
+# (measured ~3.3MB vs. the full app's 100-200MB+, see module docstring).
 
 
 def find_main_window() -> int:
@@ -128,7 +111,7 @@ def main() -> int:
 
     supervisor = Supervisor()
 
-    tray = QSystemTrayIcon(_build_icon())
+    tray = QSystemTrayIcon(build_icon())
     tray.setToolTip("JARVIS (idle — press the hotkey or click to open)")
 
     menu = QMenu()
