@@ -1,59 +1,122 @@
 # JARVIS
 
-A local-first, open-source, Cortana-like personal AI assistant for Windows.
-Full design spec: [spec.md](spec.md). Build plan: see project history / `spec.md` §57 & §62.
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![Platform Windows](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-0078D6.svg)](https://www.microsoft.com/windows)
+[![UI PySide6](https://img.shields.io/badge/UI-PySide6%20(Qt6)-41CD52.svg)](https://pypi.org/project/PySide6/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Personal files, notes, memory, indexes, and metadata stay on your machine. Only the minimum
-context needed to answer a request is ever sent to a cloud LLM (Groq primary, Ollama Cloud
-fallback) — never a whole folder, database, or document set.
+> A local-first, open-source, Cortana-like personal AI assistant for Windows.
 
-## Status
+Personal files, notes, conversational memory, indexes, and metadata stay strictly on your local machine. Only the minimum context needed to answer a given request is ever sent to a cloud LLM (Groq primary, Ollama Cloud fallback) — never your whole database or document library.
 
-Early development (V1 foundation). See `spec.md` for the full specification and
-`CHANGELOG.md` (once created) for progress.
+Full technical specification: [spec.md](spec.md).
 
-## Requirements
+---
 
-- Windows 10/11
-- Python 3.11+
-- A [Groq API key](https://console.groq.com) (primary LLM)
-- An Ollama Cloud API key (fallback LLM)
-- (Optional, for web search) A running [SearXNG](https://docs.searxng.org/) instance
+## ✨ Features
 
-## Setup
+- 💬 **Modern Desktop Chat UI**: Native PySide6 interface with Light & Dark themes, rendered markdown (tables, code blocks, syntax highlighting, bulleted lists), and clickable source citation chips.
+- 🔍 **Hybrid Local Document RAG**: Combines BM25 keyword search + FAISS vector embeddings (`all-MiniLM-L6-v2`) with a cross-encoder precision reranker (`ms-marco-MiniLM-L-6-v2`) over personal documents (`.pdf`, `.docx`, `.pptx`, `.xlsx`, `.txt`, `.md`, `.json`, code).
+- 🎙️ **Push-to-Talk Voice Chain**: Dual-tier speech-to-text (Groq Whisper → Deepgram → local `faster-whisper`) and text-to-speech (Groq Orpheus → Deepgram Aura → local Piper ONNX) that degrades gracefully without crashing.
+- 🌐 **Private Web Search**: Zero-tracking web queries via an integrated, local [SearXNG](https://docs.searxng.org/) metasearch process.
+- 🪟 **Native Windows Integration**: Lightweight background supervisor with a global hotkey (`Ctrl+Space`), system tray icon, Task Scheduler startup integration, and an allowlisted application launcher.
+- 🛡️ **Privacy & Security Guardrails**: Explicit user confirmation required for destructive actions (deleting files, locking system, external tools), zero arbitrary shell execution, local SQLite storage, and automatic secret scrubbing in logs.
+
+---
+
+## 📋 Requirements
+
+- **Operating System**: Windows 10 or 11 (64-bit)
+- **Python**: Python 3.11+
+- **Primary LLM**: A free [Groq API key](https://console.groq.com/keys)
+- *(Optional)* **Fallback LLM**: An [Ollama Cloud](https://ollama.com) API key (automatic fallback if Groq is rate-limited)
+- *(Optional)* **Cloud Voice**: A [Deepgram API key](https://console.deepgram.com) (for cloud STT/TTS)
+- *(Optional)* **Web Search**: A running local [SearXNG](https://docs.searxng.org/) instance
+
+---
+
+## 🚀 Quick Start & Setup
+
+### 1. Clone & Set Up Environment
+
+Open Command Prompt or PowerShell:
 
 ```bat
-:: 1. Clone/download this repository, then from the project root:
+:: 1. Clone the repository
+git clone https://github.com/Sujith5679/jarvis---Local-Personal-AI-Assistant-for-Windows.git
+cd "jarvis---Local-Personal-AI-Assistant-for-Windows"
+
+:: 2. Create and activate a Python virtual environment
 python -m venv .venv
 .venv\Scripts\activate
+
+:: 3. Install dependencies
 pip install -r requirements.txt
-
-:: 2. Configure credentials
-copy .env.example .env
-:: edit .env and fill in GROQ_API_KEY, OLLAMA_CLOUD_API_KEY, etc.
-
-:: 3. Start JARVIS
-start_jarvis.bat
 ```
 
-On first run, JARVIS will:
+### 2. Configure Environment
 
-1. Create its local SQLite database and run migrations (`data/jarvis.db`).
-2. Let you select folders to index (Desktop/Documents/Downloads by default — never a whole drive).
-3. Build the initial local search index in the background.
-4. Let you configure startup-with-Windows preference in Settings.
-
-## Web search (SearXNG)
-
-`web_search`/`open_webpage` need a running SearXNG instance. No Docker required —
-it runs as a plain Python/Flask app:
+Copy `.env.example` to `.env` and configure your API credentials:
 
 ```bat
-:: Outside the jarvis repo, e.g. in your user folder:
+copy .env.example .env
+```
+
+Open `.env` in your text editor and set your `GROQ_API_KEY`:
+
+```env
+GROQ_API_KEY="gsk_your_actual_groq_api_key_here"
+```
+
+*(All other settings in `.env` have sensible offline/local defaults or are optional).*
+
+### 3. Launch JARVIS
+
+You can launch JARVIS in either of two ways:
+
+- **Full Application Direct Launch**:
+  ```bat
+  start_jarvis.bat
+  ```
+- **Lightweight Supervisor (Recommended)**:
+  ```bat
+  start_jarvis_supervisor.bat
+  ```
+  Runs a minimal background process (~15MB RAM) with the global `Ctrl+Space` hotkey and system tray icon. The full assistant (~100MB+ RAM) loads on demand when summoned and releases memory when closed.
+
+---
+
+## 📂 Project Structure
+
+```text
+├── agent/            # LangGraph orchestration, state graph, confirmation guardrails
+├── app/              # Bootstrap, lifecycle, Windows startup, and background supervisor
+├── config/           # Pydantic Settings, defaults, and policy presets
+├── documents/        # Ingestion extractors for PDF, DOCX, PPTX, XLSX, TXT, MD, HTML
+├── llm/              # Multi-provider LLM abstraction (Groq, Ollama Cloud, token pricing)
+├── rag/              # BM25 + FAISS hybrid retriever, ingestion pipeline, cross-encoder reranker
+├── scheduler/        # APScheduler background tasks and persistent reminders
+├── security/         # Secret scrubbing, audit logging, input validation
+├── storage/          # SQLite database connection, migrations, and repositories
+├── tools/            # Safe built-in tools (file search, web search, app launcher, timers)
+├── ui/               # PySide6 desktop interface (chat window, theme engine, history drawer)
+├── voice/            # Push-to-talk STT & TTS dispatchers (Groq, Deepgram, local Whisper/Piper)
+├── web/              # SearXNG process management and article text scraper
+└── tests/            # Hermetic unit, integration, and UI test suite (450+ tests)
+```
+
+---
+
+## 🌐 Web Search (SearXNG)
+
+`web_search` and `open_webpage` use a local SearXNG instance. No Docker container is required — SearXNG runs as a plain Python/Flask app:
+
+```bat
+:: Outside the jarvis repo (e.g. in C:\Users\you\searxng):
 git clone --no-checkout https://github.com/searxng/searxng.git
 cd searxng
-:: Windows can't check out one file with a ':' in its name (a Linux systemd
-:: template) — sparse-checkout everything except it:
+
+:: Windows sparse-checkout (avoids illegal Windows path character in template):
 git sparse-checkout init --no-cone
 echo /* > .git\info\sparse-checkout
 echo !/utils/templates/etc/httpd/sites-available/searxng.conf:socket >> .git\info\sparse-checkout
@@ -63,130 +126,94 @@ python -m venv .venv
 .venv\Scripts\pip install -r requirements.txt tzdata
 ```
 
-Then two small edits before first run:
-1. In `searx/settings.yml`, under `search:`, add `- json` to the `formats:` list
-   (SearXNG disables the JSON API by default — our tools need it).
-2. In the same file, replace the default `secret_key: "ultrasecretkey"` with a random
-   value (e.g. `python -c "import secrets; print(secrets.token_hex(32))"`).
+### SearXNG Configuration
+1. In `searx/settings.yml`, under `search:`, add `- json` to the `formats:` list (SearXNG disables the JSON API by default; JARVIS requires it).
+2. In the same file, replace the default `secret_key: "ultrasecretkey"` with a random value:
+   ```bat
+   python -c "import secrets; print(secrets.token_hex(32))"
+   ```
+3. *(Windows-only fix)* In `searx/valkeydb.py`, move `import pwd` inside the `except ImportError` block so Unix-only imports are avoided on Windows.
 
-One more Windows-only fix: `searx/valkeydb.py` unconditionally imports the Unix-only
-`pwd` module (only actually used in an optional Redis/Valkey error-logging path we
-don't use). Move `import pwd` from the top of the file into the `except ImportError`-
-guarded block right before its one use site, so it only gets touched on Linux.
-
-Run it with `.venv\Scripts\python.exe -m searx.webapp` (serves on
-`http://127.0.0.1:8888` by default), then set `SEARXNG_URL` in `.env` to match. It
-needs to be running whenever you want `web_search`/`open_webpage` to work — without
-it, JARVIS degrades gracefully (local features keep working, web search reports
-itself as temporarily unavailable) rather than failing.
+Run it with:
+```bat
+.venv\Scripts\python.exe -m searx.webapp
+```
+It serves on `http://127.0.0.1:8888`. Without SearXNG running, JARVIS degrades gracefully (local features continue working, while web search reports itself temporarily unavailable).
 
 ### Auto-starting SearXNG with JARVIS
 
-Instead of starting it yourself every time, let JARVIS manage it: set
-`SEARXNG_AUTOSTART=true` and `SEARXNG_DIR` (the path to the checkout above, e.g.
-`C:\Users\you\searxng`) in `.env`. On startup, JARVIS checks whether `SEARXNG_URL`
-is already reachable (so it never spawns a redundant second instance if you — or a
-previous JARVIS session — already have one running) and, if not, launches
-`<SEARXNG_DIR>\.venv\Scripts\python.exe -m searx.webapp` itself, stopping it again
-on exit. If `SEARXNG_DIR` isn't set or doesn't look like a real checkout, this is
-silently skipped — the manual `web/searxng_process.py` requires no configuration
-changes elsewhere and won't break anything if you'd rather keep starting it
-yourself.
+To let JARVIS manage SearXNG automatically, set in `.env`:
+```env
+SEARXNG_AUTOSTART=true
+SEARXNG_DIR=C:\Users\you\searxng
+```
+JARVIS will verify if port 8888 is already active; if not, it spawns SearXNG as a child process and terminates it when JARVIS exits.
 
-Note the startup health check may still briefly report "web_search: offline"
-right after launch — SearXNG's own Flask server takes a few seconds to finish
-booting, and JARVIS doesn't block its own startup waiting for it.
+---
 
-## Voice (push-to-talk)
+## 🎙️ Voice (Push-to-Talk)
 
-Three backends for both speech-to-text and text-to-speech, tried in order (an
-ordered chain per `.env`, same idea as the Groq→Ollama Cloud LLM fallback):
+Voice uses a multi-tier fallback chain for both speech-to-text (STT) and text-to-speech (TTS):
 
-- **`groq`** (tried first) — Groq's hosted Whisper (STT) and Orpheus (TTS) models,
-  using the same `GROQ_API_KEY` you already have. Fast, no local RAM/CPU cost, needs
-  internet + API quota. **TTS needs a one-time step**: accept the Orpheus model's
-  terms at
-  https://console.groq.com/playground?model=canopylabs%2Forpheus-v1-english — until
-  then, TTS transparently skips to the next backend, no config change needed.
-- **`deepgram`** (tried second) — Deepgram's Listen (STT) and Aura (TTS) APIs. A
-  separate service from Groq/Ollama — sign up at https://deepgram.com and set
-  `DEEPGRAM_API_KEY` in `.env`. New accounts get a $200 one-time credit (not a
-  recurring free tier); after that it's pay-per-use (~$0.006/min).
-- **`local`** (final safety net, always available) — faster-whisper (STT, downloads
-  its model automatically on first use) and Piper (TTS, needs a voice model
-  downloaded once):
+1. **`groq`** (Primary cloud) — Groq's hosted Whisper (STT) and Orpheus (TTS) models using your existing `GROQ_API_KEY`.
+   - *Note for TTS*: Accept the one-time Orpheus model terms at [Groq Console](https://console.groq.com/playground?model=canopylabs%2Forpheus-v1-english). Until accepted, TTS automatically falls back to the next backend.
+2. **`deepgram`** (Secondary cloud) — Deepgram Listen (STT) and Aura (TTS). Set `DEEPGRAM_API_KEY` in `.env`.
+3. **`local`** (Offline safety net) — Local `faster-whisper` (STT, auto-downloads base model on first run) and `piper` (TTS, local ONNX voice):
 
-  ```bat
-  mkdir data\voices
-  .venv\Scripts\python.exe -m piper.download_voices en_US-lessac-medium --download-dir data\voices
-  ```
+   ```bat
+   mkdir data\voices
+   .venv\Scripts\python.exe -m piper.download_voices en_US-lessac-medium --download-dir data\voices
+   ```
 
-Order/membership configured via `JARVIS_STT_PROVIDERS` / `JARVIS_TTS_PROVIDERS`
-(comma-separated, default `groq,deepgram,local`). A backend without its key
-configured is skipped automatically; `local` is always attempted as a last resort
-even if every configured cloud backend fails, so voice degrades to text-only rather
-than failing outright. Set either to just `local` for fully offline voice (spec.md
-§33/§34's privacy/offline modes).
+- Configure the chain order in `.env` via `JARVIS_STT_PROVIDERS` and `JARVIS_TTS_PROVIDERS` (default: `groq,deepgram,local`).
+- In the chat window, hold the **🎤 button** to talk and release to submit.
+- To disable voice completely, set `JARVIS_ENABLE_VOICE=false` in `.env`.
 
-Hold the 🎤 button in the chat window to talk, release to send. Set
-`JARVIS_ENABLE_VOICE=false` in `.env` to hide the mic button entirely.
+---
 
-To use a different local voice, browse [available voices](https://github.com/rhasspy/piper/blob/master/VOICES.md)
-and set `JARVIS_PIPER_VOICE_PATH` in `.env` to the downloaded `.onnx` file's path.
+## 🪟 Windows Integration
 
-## Windows integration
+JARVIS is designed to stay out of the way until needed:
 
-JARVIS runs **on demand**, not as a permanently-resident background process: the
-full app (agent, RAG, voice — everything, ~100MB+ once warmed up) only runs while
-you're actually using it, and closing its window fully exits it, freeing that
-memory. A separate, much lighter always-on **supervisor** process
-(`app/supervisor.py` — just a tray icon and the global hotkey, no agent/RAG/voice
-imports at all) is what stays running in the background so Ctrl+Space keeps
-working even when JARVIS itself isn't open.
+- **Global Hotkey (`Ctrl+Space`)**: Configurable via `JARVIS_HOTKEY` in `.env` (e.g. `ctrl+alt+j`). Pressing the hotkey summons JARVIS to the foreground or launches it if idle.
+- **Background Supervisor (`app/supervisor.py`)**: Runs in the system tray and monitors the hotkey without loading ML models or databases into memory.
+- **Start with Windows**: Toggle *"Start JARVIS with Windows"* in Settings to register a Windows Task Scheduler entry that boots the supervisor at user login (never forces auto-start by default).
+- **Safe Application Launching**: The `launch_application` tool can only launch apps from an explicit allowlist (`notepad`, `calc`, `paint`, `wordpad`, `explorer`, `snipping tool`, `task manager`, `control panel`). Arbitrary shell execution is strictly disallowed.
 
-- **Global hotkey**: default `Ctrl+Space`, configurable via `JARVIS_HOTKEY` in
-  `.env` (e.g. `ctrl+alt+j`), using the
-  [`keyboard`](https://github.com/boppreh/keyboard) library's combo syntax. If
-  JARVIS isn't running, pressing it launches a fresh instance (~1-3s); if it's
-  already running (even minimized), it's brought to the foreground instead. If
-  hotkey registration fails for any reason (another app already owns the combo, a
-  restrictive permission context, ...) it's logged as a warning and everything else
-  keeps working — the hotkey is a convenience, not a requirement.
-- **Running it**: `start_jarvis_supervisor.bat` starts just the lightweight
-  supervisor (tray icon + hotkey) — nothing else runs until you actually open
-  JARVIS. `start_jarvis.bat` (what the supervisor itself launches) starts the full
-  app directly, same as always, if you'd rather skip the supervisor.
-- **Closing it**: the titlebar X (or JARVIS's own tray icon → Quit, which is a
-  per-session convenience menu — Pause indexing, Start/Stop voice, Reindex files,
-  View logs — separate from the supervisor's tray icon) fully exits the full app.
-  The supervisor keeps running afterward so Ctrl+Space still works next time.
-- **Start with Windows**: toggle "Start JARVIS with Windows" in Settings. This
-  registers/removes a per-user Windows Task Scheduler entry (`schtasks`) that runs
-  `start_jarvis_supervisor.bat` (not the full app) at logon — off by default, and
-  only ever changed by that checkbox (never automatically, per spec.md §27: "Do not
-  force automatic startup").
-- **Application launching**: the `launch_application` tool can only run apps from a
-  fixed allowlist (notepad, calculator, paint, wordpad, explorer, snipping tool,
-  task manager, control panel — see `config/defaults.py`'s
-  `DEFAULT_APP_ALLOWLIST`) — never an arbitrary command. `open_file` can only open a
-  file already inside one of your indexed folders. `lock_system` locks the Windows
-  session. All three always require your explicit confirmation before running.
+---
 
-## Development
+## 🧪 Development & Testing
+
+Run code quality checks and tests:
 
 ```bat
-pip install -r requirements.txt
+:: Activate virtual environment
+.venv\Scripts\activate
+
+:: Run fast unit and integration tests (recommended for daily dev)
+pytest -m "not slow"
+
+:: Run complete test suite (includes slower offline ML model checks)
 pytest
+
+:: Linting and style verification
 ruff check .
+
+:: Type checking
 mypy .
 ```
 
-## Security notes
+---
 
-- `.env` is never committed; secrets are never logged, never sent to the LLM, and never stored
-  in SQLite.
-- Destructive or externally-consequential actions (deleting files, sending messages, etc.)
-  always require explicit confirmation.
-- The LLM never gets raw shell/OS access — only an explicit, permissioned set of tools.
+## 🔒 Security & Privacy Model
 
-See `spec.md` §28, §29, §53–§55 for the full security/permission model.
+- **No Secret Leaks**: `.env` and `.env.*` are gitignored. Secrets are masked (`mask(...)`) and scrubbed from LLM prompts and audit logs.
+- **Destructive Action Confirmation**: High-risk tool calls (file modifications, system locks, external actions) trigger an interactive confirmation dialog requiring your approval before execution.
+- **Zero Raw Shell Access**: The LLM interacts only through typed, constrained tools with input validation and timeouts.
+- **Local Data Guarantee**: SQLite database, vector indexes, and chat history are stored under `./data` (or your custom `JARVIS_DATA_DIR`) and never leave your PC.
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
